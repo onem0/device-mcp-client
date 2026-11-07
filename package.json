@@ -1,0 +1,15 @@
+{
+  "name": "device-mcp-client",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun run src/index.ts",
+    "build": "bun run build.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.4",
+    "typescript": "^7.0.2"
+  },
+  "description": "Daemon für device-mcp: führt Befehle und Dateizugriffe von Claude auf Linux-Geräten aus."
+}
