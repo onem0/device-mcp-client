@@ -19,7 +19,7 @@ export const cleanFileLine = (line: string) => (line.endsWith('\r') ? line.slice
 export function capLine(line: string, extraBytes = 0) {
   if (line.length <= MAX_LINE_CHARS && extraBytes === 0) return { text: line, cut: false }
   const rest = line.length - Math.min(line.length, MAX_LINE_CHARS)
-  const more = extraBytes > 0 ? `${rest > 0 ? `${rest} Zeichen und ` : ''}${extraBytes} Bytes` : `${rest} Zeichen`
+  const more = extraBytes > 0 ? `${rest > 0 ? `${rest} chars and ` : ''}${extraBytes} bytes` : `${rest} chars`
   return { text: `${line.slice(0, MAX_LINE_CHARS)} … [+${more}]`, cut: true }
 }
 

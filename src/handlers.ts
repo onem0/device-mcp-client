@@ -15,7 +15,7 @@ export function createHandlers(jobs: JobManager) {
       case 'job_list':
         return jobs.list(Number(params.limit) || 20)
       case 'job_output':
-        if (!['range', 'tail', 'headtail'].includes(params.mode)) throw new DaemonError('Unbekannter Ausgabemodus.', 'BAD_REQUEST')
+        if (!['range', 'tail', 'headtail'].includes(params.mode)) throw new DaemonError('Unknown output mode.', 'BAD_REQUEST')
         return jobs.output(params as OutputParams)
       case 'job_kill':
         return jobs.kill(params.jobId, params.signal)
@@ -36,7 +36,7 @@ export function createHandlers(jobs: JobManager) {
       case 'session_kill':
         return sessionKill(params)
       default:
-        throw new DaemonError(`Unbekannte Methode ${method}. Ist der Daemon aktuell?`, 'UNKNOWN_METHOD')
+        throw new DaemonError(`Unknown method ${method}. Is the daemon up to date?`, 'UNKNOWN_METHOD')
     }
   }
 }

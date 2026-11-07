@@ -43,10 +43,10 @@ function binaryType(head: Buffer): string | null {
 
 function fsError(err: unknown, file: string): never {
   const code = (err as NodeJS.ErrnoException).code
-  if (code === 'ENOENT') throw new DaemonError(`${file} gibt es nicht.`, 'NOT_FOUND')
-  if (code === 'EACCES' || code === 'EPERM') throw new DaemonError(`Keine Berechtigung für ${file}.`, 'FORBIDDEN')
-  if (code === 'EISDIR') throw new DaemonError(`${file} ist ein Ordner.`, 'BAD_REQUEST')
-  if (code === 'ENOTDIR') throw new DaemonError(`Ein Teil von ${file} ist kein Ordner.`, 'BAD_REQUEST')
+  if (code === 'ENOENT') throw new DaemonError(`${file} does not exist.`, 'NOT_FOUND')
+  if (code === 'EACCES' || code === 'EPERM') throw new DaemonError(`Permission denied for ${file}.`, 'FORBIDDEN')
+  if (code === 'EISDIR') throw new DaemonError(`${file} is a directory.`, 'BAD_REQUEST')
+  if (code === 'ENOTDIR') throw new DaemonError(`Part of ${file} is not a directory.`, 'BAD_REQUEST')
   throw new DaemonError(`${file}: ${(err as Error).message}`)
 }
 
@@ -58,14 +58,14 @@ export async function readFileForClaude(params: {
   byteOffset?: number
   byteLength?: number
 }): Promise<ReadFileResult> {
-  if (typeof params.path !== 'string' || !params.path) throw new DaemonError('Kein Pfad angegeben.', 'BAD_REQUEST')
+  if (typeof params.path !== 'string' || !params.path) throw new DaemonError('No path given.', 'BAD_REQUEST')
   const file = resolveUserPath(params.path)
   const offset = Math.max(0, params.offset ?? 0)
   const limit = Math.max(1, params.limit ?? 2000)
 
   const info = await stat(file).catch((err) => fsError(err, file))
-  if (info.isDirectory()) throw new DaemonError(`${file} ist ein Ordner. Inhalt z. B. mit run_command "ls -la ${file}".`, 'BAD_REQUEST')
-  if (!info.isFile()) throw new DaemonError(`${file} ist keine normale Datei.`, 'BAD_REQUEST')
+  if (info.isDirectory()) throw new DaemonError(`${file} is a directory. List it e.g. with run_command "ls -la ${file}".`, 'BAD_REQUEST')
+  if (!info.isFile()) throw new DaemonError(`${file} is not a regular file.`, 'BAD_REQUEST')
 
   // Rohdaten als base64, in Stücken: für Binärdateien jeder Art.
   if (params.encoding === 'base64') {
@@ -99,8 +99,8 @@ export async function readFileForClaude(params: {
     if (info.size > IMAGE_MAX_BYTES) {
       const mb = (info.size / 1024 / 1024).toFixed(1)
       throw new DaemonError(
-        `Das Bild ist ${mb} MB groß, höchstens 3,75 MB gehen. Verkleinern z. B. mit run_command: ` +
-          `convert "${file}" -resize 2000x2000\\> -quality 85 /tmp/klein.jpg (ImageMagick) oder ffmpeg -i "${file}" -vf scale=2000:-1 /tmp/klein.jpg`,
+        `The image is ${mb} MB, at most 3.75 MB is allowed. Shrink it e.g. with run_command: ` +
+          `convert "${file}" -resize 2000x2000\\> -quality 85 /tmp/small.jpg (ImageMagick) or ffmpeg -i "${file}" -vf scale=2000:-1 /tmp/small.jpg`,
         'TOO_LARGE',
       )
     }
@@ -178,14 +178,14 @@ export async function writeFileForClaude(params: {
   mode?: 'overwrite' | 'append'
   encoding?: 'utf8' | 'base64'
 }): Promise<WriteFileResult> {
-  if (typeof params.path !== 'string' || !params.path) throw new DaemonError('Kein Pfad angegeben.', 'BAD_REQUEST')
-  if (typeof params.content !== 'string') throw new DaemonError('Kein Inhalt angegeben.', 'BAD_REQUEST')
+  if (typeof params.path !== 'string' || !params.path) throw new DaemonError('No path given.', 'BAD_REQUEST')
+  if (typeof params.content !== 'string') throw new DaemonError('No content given.', 'BAD_REQUEST')
   const file = resolveUserPath(params.path)
   const data = params.encoding === 'base64' ? Buffer.from(params.content, 'base64') : Buffer.from(params.content, 'utf8')
-  if (data.length > WRITE_MAX_BYTES) throw new DaemonError(`Zu groß: höchstens ${WRITE_MAX_BYTES / 1024 / 1024} MB pro Aufruf.`, 'TOO_LARGE')
+  if (data.length > WRITE_MAX_BYTES) throw new DaemonError(`Too large: at most ${WRITE_MAX_BYTES / 1024 / 1024} MB per call.`, 'TOO_LARGE')
 
   const before = await stat(file).catch(() => null)
-  if (before?.isDirectory()) throw new DaemonError(`${file} ist ein Ordner.`, 'BAD_REQUEST')
+  if (before?.isDirectory()) throw new DaemonError(`${file} is a directory.`, 'BAD_REQUEST')
 
   await mkdir(path.dirname(file), { recursive: true }).catch((err) => fsError(err, path.dirname(file)))
   if (params.mode === 'append') await appendFile(file, data).catch((err) => fsError(err, file))
@@ -225,19 +225,19 @@ async function writeAtomic(file: string, data: string, mode: number, uid: number
 }
 
 export async function editFileForClaude(params: { path: string; old_string: string; new_string: string; replace_all?: boolean }): Promise<EditFileResult> {
-  if (typeof params.path !== 'string' || !params.path) throw new DaemonError('Kein Pfad angegeben.', 'BAD_REQUEST')
-  if (typeof params.old_string !== 'string' || !params.old_string) throw new DaemonError('old_string darf nicht leer sein.', 'BAD_REQUEST')
-  if (typeof params.new_string !== 'string') throw new DaemonError('new_string fehlt.', 'BAD_REQUEST')
-  if (params.old_string === params.new_string) throw new DaemonError('old_string und new_string sind gleich, es gibt nichts zu ändern.', 'BAD_REQUEST')
+  if (typeof params.path !== 'string' || !params.path) throw new DaemonError('No path given.', 'BAD_REQUEST')
+  if (typeof params.old_string !== 'string' || !params.old_string) throw new DaemonError('old_string must not be empty.', 'BAD_REQUEST')
+  if (typeof params.new_string !== 'string') throw new DaemonError('new_string is missing.', 'BAD_REQUEST')
+  if (params.old_string === params.new_string) throw new DaemonError('old_string and new_string are identical, nothing to change.', 'BAD_REQUEST')
 
   // Symlinks auflösen: geändert wird die Zieldatei, der Link bleibt ein Link.
   const file = await realpath(resolveUserPath(params.path)).catch((err) => fsError(err, resolveUserPath(params.path)))
   const info = await stat(file).catch((err) => fsError(err, file))
-  if (!info.isFile()) throw new DaemonError(`${file} ist keine normale Datei.`, 'BAD_REQUEST')
-  if (info.size > EDIT_MAX_BYTES) throw new DaemonError(`${file} ist zu groß für edit_file (höchstens 16 MB).`, 'TOO_LARGE')
+  if (!info.isFile()) throw new DaemonError(`${file} is not a regular file.`, 'BAD_REQUEST')
+  if (info.size > EDIT_MAX_BYTES) throw new DaemonError(`${file} is too large for edit_file (at most 16 MB).`, 'TOO_LARGE')
 
   const buf = await readFile(file).catch((err) => fsError(err, file))
-  if (buf.includes(0)) throw new DaemonError(`${file} ist eine Binärdatei, edit_file ändert nur Text.`, 'BAD_REQUEST')
+  if (buf.includes(0)) throw new DaemonError(`${file} is a binary file, edit_file only changes text.`, 'BAD_REQUEST')
   const text = buf.toString('utf8')
 
   // Zeilenenden erhalten: Hat die Datei durchgehend CRLF, werden \n in old_string und new_string angeglichen.
@@ -252,12 +252,12 @@ export async function editFileForClaude(params: { path: string; old_string: stri
   const count = countOccurrences(text, oldS)
   if (count === 0) {
     throw new DaemonError(
-      `old_string kommt in ${file} nicht vor (0 Treffer). Leerzeichen, Einrückung und Zeilenumbrüche müssen exakt stimmen; zum Nachsehen read_file nutzen.`,
+      `old_string not found in ${file} (0 matches). Spaces, indentation and line breaks must match exactly; use read_file to check.`,
       'NO_MATCH',
     )
   }
   if (count > 1 && !params.replace_all) {
-    throw new DaemonError(`old_string kommt in ${file} ${count}-mal vor. Mehr umgebenden Text angeben, damit es eindeutig ist, oder replace_all=true setzen.`, 'AMBIGUOUS')
+    throw new DaemonError(`old_string occurs ${count} times in ${file}. Include more surrounding text to make it unique, or set replace_all=true.`, 'AMBIGUOUS')
   }
 
   // Neuen Text bauen und merken, wo die Ersetzungen landen.

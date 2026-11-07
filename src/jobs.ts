@@ -124,13 +124,13 @@ export class JobManager extends EventEmitter<{ exit: [JobSummary] }> {
         // Ein Job, der beim letzten Lauf noch lief, ist mit dem Daemon beendet worden.
         if (meta.status === 'running') {
           meta.status = 'lost'
-          meta.error = 'Der Daemon wurde neu gestartet, während der Job lief.'
+          meta.error = 'The daemon restarted while the job was running.'
           meta.finishedAt = new Date().toISOString()
           this.save(job)
         }
         this.jobs.set(meta.id, job)
       } catch (err) {
-        log.warn(`Job-Datei ${file} nicht lesbar: ${(err as Error).message}`)
+        log.warn(`Cannot read job file ${file}: ${(err as Error).message}`)
       }
     }
     this.prune()
@@ -146,18 +146,18 @@ export class JobManager extends EventEmitter<{ exit: [JobSummary] }> {
 
   start(params: ExecParams): JobSummary {
     const { jobId, command } = params
-    if (typeof jobId !== 'string' || !/^[a-z0-9]{4,64}$/.test(jobId)) throw new DaemonError('Ungültige Job-ID.', 'BAD_REQUEST')
-    if (typeof command !== 'string' || !command) throw new DaemonError('Kein Befehl angegeben.', 'BAD_REQUEST')
-    if (this.jobs.has(jobId)) throw new DaemonError(`Job ${jobId} gibt es schon.`, 'CONFLICT')
+    if (typeof jobId !== 'string' || !/^[a-z0-9]{4,64}$/.test(jobId)) throw new DaemonError('Invalid job ID.', 'BAD_REQUEST')
+    if (typeof command !== 'string' || !command) throw new DaemonError('No command given.', 'BAD_REQUEST')
+    if (this.jobs.has(jobId)) throw new DaemonError(`Job ${jobId} already exists.`, 'CONFLICT')
 
     const cwd = params.cwd ? resolveUserPath(params.cwd) : home()
     let isDir = false
     try {
       isDir = statSync(cwd).isDirectory()
     } catch {
-      throw new DaemonError(`Das Arbeitsverzeichnis ${cwd} gibt es nicht.`, 'NOT_FOUND')
+      throw new DaemonError(`Working directory ${cwd} does not exist.`, 'NOT_FOUND')
     }
-    if (!isDir) throw new DaemonError(`${cwd} ist kein Ordner.`, 'BAD_REQUEST')
+    if (!isDir) throw new DaemonError(`${cwd} is not a directory.`, 'BAD_REQUEST')
 
     const timeoutMs = typeof params.timeoutMs === 'number' && params.timeoutMs > 0 ? params.timeoutMs : null
     const job = new Job(
@@ -193,7 +193,7 @@ export class JobManager extends EventEmitter<{ exit: [JobSummary] }> {
     child.stderr?.on('data', onData)
 
     child.on('error', (err) => {
-      job.meta.error = `Start fehlgeschlagen: ${err.message}`
+      job.meta.error = `Failed to start: ${err.message}`
       this.finish(job, null, null, 'failed')
       this.closeLog(job)
     })
@@ -217,7 +217,7 @@ export class JobManager extends EventEmitter<{ exit: [JobSummary] }> {
       }, timeoutMs)
     }
 
-    log.info(`Job ${jobId} gestartet (pid ${job.pid ?? '?'}): ${command.slice(0, 200)}`)
+    log.info(`Job ${jobId} started (pid ${job.pid ?? '?'}): ${command.slice(0, 200)}`)
     return this.summary(job)
   }
 
@@ -236,8 +236,8 @@ export class JobManager extends EventEmitter<{ exit: [JobSummary] }> {
   // Wartet kurz auf das Ende, damit der Aufrufer gleich den Endstand sieht.
   async kill(jobId: string, signal: NodeJS.Signals = 'SIGTERM') {
     const job = this.get(jobId)
-    if (!job.running) throw new DaemonError(`Job ${jobId} läuft nicht mehr (${job.meta.status}).`, 'NOT_RUNNING')
-    if (!['SIGTERM', 'SIGKILL', 'SIGINT', 'SIGHUP'].includes(signal)) throw new DaemonError(`Signal ${signal} ist nicht erlaubt.`, 'BAD_REQUEST')
+    if (!job.running) throw new DaemonError(`Job ${jobId} is no longer running (${job.meta.status}).`, 'NOT_RUNNING')
+    if (!['SIGTERM', 'SIGKILL', 'SIGINT', 'SIGHUP'].includes(signal)) throw new DaemonError(`Signal ${signal} is not allowed.`, 'BAD_REQUEST')
     job.killRequested = signal
     this.signal(job, signal)
     if (signal !== 'SIGKILL' && !job.killTimer) {
@@ -346,7 +346,7 @@ export class JobManager extends EventEmitter<{ exit: [JobSummary] }> {
 
   private get(jobId: string) {
     const job = typeof jobId === 'string' ? this.jobs.get(jobId) : undefined
-    if (!job) throw new DaemonError(`Job ${jobId} ist auf diesem Gerät nicht bekannt.`, 'NOT_FOUND')
+    if (!job) throw new DaemonError(`Job ${jobId} is not known on this device.`, 'NOT_FOUND')
     return job
   }
 
@@ -361,7 +361,7 @@ export class JobManager extends EventEmitter<{ exit: [JobSummary] }> {
       if (!job.meta.outputTruncated) {
         data = data.subarray(0, Math.max(0, MAX_LOG_BYTES - job.meta.outputBytes))
         job.meta.outputTruncated = true
-        log.warn(`Job ${job.meta.id}: Log voll (${MAX_LOG_BYTES} Bytes), weitere Ausgabe wird verworfen`)
+        log.warn(`Job ${job.meta.id}: log full (${MAX_LOG_BYTES} bytes), discarding further output`)
       } else return
     }
     if (data.length === 0) return
@@ -404,7 +404,7 @@ export class JobManager extends EventEmitter<{ exit: [JobSummary] }> {
     meta.finishedAt = new Date().toISOString()
     meta.durationMs = Date.parse(meta.finishedAt) - Date.parse(meta.startedAt)
     this.save(job)
-    log.info(`Job ${meta.id} ${meta.status}${code !== null ? ` (exit ${code})` : ''}${signal ? ` (${signal})` : ''} nach ${meta.durationMs} ms`)
+    log.info(`Job ${meta.id} ${meta.status}${code !== null ? ` (exit ${code})` : ''}${signal ? ` (${signal})` : ''} after ${meta.durationMs} ms`)
     this.emit('exit', this.summary(job))
   }
 

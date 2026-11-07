@@ -57,14 +57,14 @@ export class Connection {
     try {
       ws = new WebSocket(url)
     } catch (err) {
-      log.error(`Verbindung zu ${url} nicht möglich: ${(err as Error).message}`)
+      log.error(`Cannot connect to ${url}: ${(err as Error).message}`)
       return this.scheduleReconnect()
     }
     this.ws = ws
 
     const connectTimer = setTimeout(() => {
       if (this.ws === ws && !this.ready) {
-        log.warn(`Keine Antwort von ${url} innerhalb von ${CONNECT_TIMEOUT_MS / 1000} s`)
+        log.warn(`No answer from ${url} within ${CONNECT_TIMEOUT_MS / 1000} s`)
         this.abandon(ws, 'connect timeout')
       }
     }, CONNECT_TIMEOUT_MS)
@@ -86,7 +86,7 @@ export class Connection {
       try {
         msg = JSON.parse(String(event.data))
       } catch {
-        return log.warn('Ungültige Nachricht vom Server')
+        return log.warn('Invalid message from server')
       }
       this.onMessage(ws, msg)
     }
@@ -114,12 +114,12 @@ export class Connection {
         this.timers.push(
           setInterval(() => {
             if (Date.now() - this.lastServerMessage > this.heartbeatTimeoutMs) {
-              log.warn('Server antwortet nicht mehr, baue neu auf')
+              log.warn('Server stopped responding, reconnecting')
               this.abandon(ws, 'heartbeat timeout')
             }
           }, 5_000),
         )
-        log.info(`Verbunden mit ${this.config.serverUrl} als „${msg.name}“`)
+        log.info(`Connected to ${this.config.serverUrl} as "${msg.name}"`)
         return
       }
       case 'heartbeat_ack':
@@ -144,19 +144,19 @@ export class Connection {
     let delay: number | undefined
     switch (code) {
       case CloseCode.InvalidToken:
-        log.error('Der Server lehnt den Geräte-Token ab (Gerät gelöscht oder Token neu erzeugt). Neuer Versuch in 5 min.')
+        log.error('The server rejects the device token (device deleted or token regenerated). Retrying in 5 min.')
         delay = 5 * 60_000
         break
       case CloseCode.Disabled:
-        log.warn('Das Gerät ist im Panel deaktiviert. Neuer Versuch in 1 min.')
+        log.warn('The device is disabled in the panel. Retrying in 1 min.')
         delay = 60_000
         break
       case CloseCode.Replaced:
-        log.warn('Eine andere Verbindung mit demselben Token hat diese ersetzt. Läuft der Daemon doppelt?')
+        log.warn('Another connection with the same token replaced this one. Is the daemon running twice?')
         delay = 30_000
         break
       default:
-        log.warn(`Verbindung ${wasReady ? 'getrennt' : 'fehlgeschlagen'} (Code ${code}${reason ? `, ${reason}` : ''})`)
+        log.warn(`Connection ${wasReady ? 'lost' : 'failed'} (code ${code}${reason ? `, ${reason}` : ''})`)
     }
     this.scheduleReconnect(delay)
   }
@@ -179,7 +179,7 @@ export class Connection {
     this.attempt = Math.min(this.attempt + 1, 16)
     // ±20 % Streuung, damit nach einem Server-Neustart nicht alle Geräte gleichzeitig anklopfen.
     const delay = Math.round((fixedDelay ?? backoff) * (0.8 + Math.random() * 0.4))
-    log.info(`Neuer Verbindungsversuch in ${(delay / 1000).toFixed(1)} s`)
+    log.info(`Reconnecting in ${(delay / 1000).toFixed(1)} s`)
     this.reconnectTimer = setTimeout(() => this.connect(), delay)
   }
 
@@ -192,7 +192,7 @@ export class Connection {
     try {
       ws.send(JSON.stringify(msg))
     } catch (err) {
-      log.warn(`Senden fehlgeschlagen: ${(err as Error).message}`)
+      log.warn(`Send failed: ${(err as Error).message}`)
     }
   }
 

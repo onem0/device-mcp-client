@@ -16,12 +16,12 @@ if (arg === '--version' || arg === 'version') {
 if (arg === '--help' || arg === 'help') {
   console.log(`device-mcp ${VERSION}
 
-Daemon für device-mcp. Verbindet sich mit dem Server und führt dessen Aufträge aus.
-Läuft normalerweise als systemd-User-Service: systemctl --user status device-mcp
+Daemon for device-mcp. Connects to the server and runs its requests.
+Usually runs as a systemd user service: systemctl --user status device-mcp
 
-Konfiguration: ${configPath()}
-Jobs und Logs: ${stateDir()}/jobs
-Deinstallieren: device-mcp-uninstall`)
+Config:    ${configPath()}
+Jobs/logs: ${stateDir()}/jobs
+Uninstall: device-mcp-uninstall`)
   process.exit(0)
 }
 
@@ -37,7 +37,7 @@ const jobs = new JobManager(stateDir())
 jobs.init()
 const connection = new Connection(config, jobs, createHandlers(jobs))
 
-log.info(`device-mcp ${VERSION} startet, Server ${config.serverUrl}`)
+log.info(`device-mcp ${VERSION} starting, server ${config.serverUrl}`)
 connection.start()
 
 let stopping = false
@@ -45,7 +45,7 @@ for (const signal of ['SIGTERM', 'SIGINT'] as const) {
   process.on(signal, () => {
     if (stopping) process.exit(1)
     stopping = true
-    log.info('Daemon wird beendet')
+    log.info('Daemon stopping')
     connection.stop()
     jobs.killAll()
     setTimeout(() => process.exit(0), 1_000).unref?.()

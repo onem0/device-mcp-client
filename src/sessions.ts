@@ -57,7 +57,7 @@ async function tmux(args: string[]): Promise<RunResult> {
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
       throw new DaemonError(
-        'tmux ist auf diesem Gerät nicht installiert. Installieren, z. B. mit run_command: sudo apt install -y tmux (Debian/Ubuntu/Raspberry Pi OS) oder sudo dnf install -y tmux (Fedora).',
+        'tmux is not installed on this device. Install it, e.g. with run_command: sudo apt install -y tmux (Debian/Ubuntu/Raspberry Pi OS) or sudo dnf install -y tmux (Fedora).',
         'TMUX_MISSING',
       )
     }
@@ -67,7 +67,7 @@ async function tmux(args: string[]): Promise<RunResult> {
 
 async function tmuxOk(args: string[]) {
   const res = await tmux(args)
-  if (res.code !== 0) throw new DaemonError(`tmux ${args[0]} fehlgeschlagen: ${res.stderr.trim() || `Exit ${res.code}`}`, 'TMUX_ERROR')
+  if (res.code !== 0) throw new DaemonError(`tmux ${args[0]} failed: ${res.stderr.trim() || `exit ${res.code}`}`, 'TMUX_ERROR')
   return res
 }
 
@@ -75,10 +75,10 @@ const noServer = (stderr: string) => /no server running|error connecting|No such
 
 // Akzeptiert "build" und "mcp-build", liefert immer "mcp-build".
 export function sessionName(input: string) {
-  if (typeof input !== 'string') throw new DaemonError('Kein Session-Name angegeben.', 'BAD_REQUEST')
+  if (typeof input !== 'string') throw new DaemonError('No session name given.', 'BAD_REQUEST')
   const raw = input.trim()
   const rest = raw.startsWith(SESSION_PREFIX) ? raw.slice(SESSION_PREFIX.length) : raw
-  if (!NAME_RE.test(rest)) throw new DaemonError(`Ungültiger Session-Name „${input}“. Erlaubt sind Buchstaben, Ziffern, - und _ (höchstens 48 Zeichen).`, 'BAD_REQUEST')
+  if (!NAME_RE.test(rest)) throw new DaemonError(`Invalid session name "${input}". Allowed are letters, digits, - and _ (at most 48 characters).`, 'BAD_REQUEST')
   return SESSION_PREFIX + rest
 }
 
@@ -93,7 +93,7 @@ async function exists(name: string) {
 async function mustExist(name: string) {
   if (await exists(name)) return
   const names = (await sessionList()).map((s) => s.name)
-  throw new DaemonError(`Keine Session ${name}. ${names.length ? `Vorhanden: ${names.join(', ')}.` : 'Es läuft keine mcp-Session.'}`, 'NOT_FOUND')
+  throw new DaemonError(`No session ${name}. ${names.length ? `Existing: ${names.join(', ')}.` : 'No mcp session is running.'}`, 'NOT_FOUND')
 }
 
 // systemd-run --user --scope legt den tmux-Server in eine eigene Scope-Unit. Sonst gehörte er zur Cgroup des
@@ -113,23 +113,23 @@ async function canUseScope() {
 
 export async function sessionStart(params: { name?: string; cwd?: string; command?: string; cols?: number; rows?: number }): Promise<SessionStartResult> {
   const name = params.name ? sessionName(params.name) : `${SESSION_PREFIX}${randomBytes(3).toString('hex')}`
-  if (await exists(name)) throw new DaemonError(`Die Session ${name} gibt es schon. Anderen Namen wählen oder erst session_kill.`, 'CONFLICT')
+  if (await exists(name)) throw new DaemonError(`Session ${name} already exists. Pick another name or run session_kill first.`, 'CONFLICT')
 
   const cwd = params.cwd ? resolveUserPath(params.cwd) : home()
   let isDir = false
   try {
     isDir = statSync(cwd).isDirectory()
   } catch {
-    throw new DaemonError(`Das Arbeitsverzeichnis ${cwd} gibt es nicht.`, 'NOT_FOUND')
+    throw new DaemonError(`Working directory ${cwd} does not exist.`, 'NOT_FOUND')
   }
-  if (!isDir) throw new DaemonError(`${cwd} ist kein Ordner.`, 'BAD_REQUEST')
+  if (!isDir) throw new DaemonError(`${cwd} is not a directory.`, 'BAD_REQUEST')
 
   const cols = clamp(params.cols ?? 200, 20, 500)
   const rows = clamp(params.rows ?? 50, 5, 200)
   // Ohne command startet tmux die Standard-Shell des Benutzers als Login-Shell.
   const args = ['new-session', '-d', '-s', name, '-x', String(cols), '-y', String(rows), '-c', cwd]
   if (params.command) {
-    if (typeof params.command !== 'string') throw new DaemonError('command muss ein String sein.', 'BAD_REQUEST')
+    if (typeof params.command !== 'string') throw new DaemonError('command must be a string.', 'BAD_REQUEST')
     // Nach dem Ende des Befehls soll der Bildschirm stehen bleiben, damit die letzte Ausgabe lesbar ist.
     // remain-on-exit muss gesetzt sein, bevor der Befehl läuft: erst ein wartender Platzhalter (cat),
     // dann die Option, dann ersetzt respawn-pane den Platzhalter durch den eigentlichen Befehl.
@@ -147,7 +147,7 @@ export async function sessionStart(params: { name?: string; cwd?: string; comman
   }
   if (!res) res = await tmux(args)
   if (res.code !== 0 && !(await exists(name))) {
-    throw new DaemonError(`tmux konnte die Session nicht starten: ${res.stderr.trim() || `Exit ${res.code}`}`, 'TMUX_ERROR')
+    throw new DaemonError(`tmux could not start the session: ${res.stderr.trim() || `exit ${res.code}`}`, 'TMUX_ERROR')
   }
   return { name, cwd, cols, rows, detachedFromDaemon }
 }
@@ -155,12 +155,12 @@ export async function sessionStart(params: { name?: string; cwd?: string; comman
 export async function sessionSend(params: { session: string; text?: string; keys?: string[]; wait_ms?: number }): Promise<SessionScreen | { name: string; screen: null }> {
   const name = sessionName(params.session)
   const keys = params.keys ?? []
-  if (!Array.isArray(keys) || keys.some((k) => typeof k !== 'string')) throw new DaemonError('keys muss eine Liste von Tastennamen sein.', 'BAD_REQUEST')
+  if (!Array.isArray(keys) || keys.some((k) => typeof k !== 'string')) throw new DaemonError('keys must be a list of key names.', 'BAD_REQUEST')
   const bad = keys.filter((k) => !KEY_RE.test(k))
   if (bad.length) {
-    throw new DaemonError(`Unbekannte Taste(n): ${bad.join(', ')}. Erlaubt sind z. B. Enter, Tab, Escape, BSpace, Up, Down, Left, Right, C-c, C-d, M-x, F1–F12.`, 'BAD_REQUEST')
+    throw new DaemonError(`Unknown key(s): ${bad.join(', ')}. Allowed are e.g. Enter, Tab, Escape, BSpace, Up, Down, Left, Right, C-c, C-d, M-x, F1–F12.`, 'BAD_REQUEST')
   }
-  if (!params.text && keys.length === 0) throw new DaemonError('Nichts zu senden: text oder keys angeben.', 'BAD_REQUEST')
+  if (!params.text && keys.length === 0) throw new DaemonError('Nothing to send: give text or keys.', 'BAD_REQUEST')
   await mustExist(name)
 
   // Erst der Text (wörtlich, -l), dann die Sondertasten. So geht "Befehl + Enter" in einem Aufruf.
@@ -190,7 +190,7 @@ export async function sessionRead(params: { session: string; scrollback_lines?: 
 
   let text = captured.stdout.replace(/\s+$/, '')
   if (dead === '1') text = text.replace(/^\s*\n/, '').replace(/\n{3,}/g, '\n\n')
-  if (text.length > MAX_SCREEN_CHARS) text = `[… gekürzt, nur das Ende]\n${text.slice(-MAX_SCREEN_CHARS)}`
+  if (text.length > MAX_SCREEN_CHARS) text = `[… truncated, showing the end]\n${text.slice(-MAX_SCREEN_CHARS)}`
   return {
     name,
     text,
@@ -209,7 +209,7 @@ export async function sessionList(): Promise<SessionInfo[]> {
   ])
   if (res.code !== 0) {
     if (noServer(res.stderr)) return []
-    throw new DaemonError(`tmux list-sessions fehlgeschlagen: ${res.stderr.trim()}`, 'TMUX_ERROR')
+    throw new DaemonError(`tmux list-sessions failed: ${res.stderr.trim()}`, 'TMUX_ERROR')
   }
   return res.stdout
     .split('\n')
