@@ -1,6 +1,7 @@
-import { readFileForClaude, writeFileForClaude } from './files.ts'
+import { editFileForClaude, readFileForClaude, writeFileForClaude } from './files.ts'
 import type { JobManager, OutputParams } from './jobs.ts'
 import { DaemonError } from './protocol.ts'
+import { sessionKill, sessionList, sessionRead, sessionSend, sessionStart } from './sessions.ts'
 
 // Anfragen des Servers. Der Server ist vertrauenswürdig, die Parameter werden trotzdem grob geprüft.
 export function createHandlers(jobs: JobManager) {
@@ -22,6 +23,18 @@ export function createHandlers(jobs: JobManager) {
         return readFileForClaude(params)
       case 'write_file':
         return writeFileForClaude(params)
+      case 'edit_file':
+        return editFileForClaude(params)
+      case 'session_start':
+        return sessionStart(params)
+      case 'session_send':
+        return sessionSend(params)
+      case 'session_read':
+        return sessionRead(params)
+      case 'session_list':
+        return sessionList()
+      case 'session_kill':
+        return sessionKill(params)
       default:
         throw new DaemonError(`Unbekannte Methode ${method}. Ist der Daemon aktuell?`, 'UNKNOWN_METHOD')
     }

@@ -1,9 +1,10 @@
+import { randomBytes } from 'node:crypto'
 import { createReadStream } from 'node:fs'
-import { appendFile, mkdir, open, readFile, stat, writeFile } from 'node:fs/promises'
+import { appendFile, chmod, chown, mkdir, open, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { createInterface } from 'node:readline'
 import { resolveUserPath } from './paths.ts'
-import { DaemonError, type ReadFileResult, type WriteFileResult } from './protocol.ts'
+import { DaemonError, type EditFileResult, type ReadFileResult, type WriteFileResult } from './protocol.ts'
 import { capLine, cleanFileLine, takeLines } from './text.ts'
 
 // Claude akzeptiert Bilder bis 5 MB als base64, das sind 3,75 MB Rohdaten.
@@ -13,6 +14,13 @@ const WRITE_MAX_BYTES = 16 * 1024 * 1024
 const FULL_READ_MAX_BYTES = 16 * 1024 * 1024
 const MAX_TEXT_CHARS = 100_000
 const SNIFF_BYTES = 8192
+// read_file mit encoding=base64: so viele Bytes pro Aufruf (Standard und Obergrenze).
+export const BASE64_DEFAULT_BYTES = 256 * 1024
+export const BASE64_MAX_BYTES = 1024 * 1024
+// edit_file liest die Datei ganz in den Speicher.
+const EDIT_MAX_BYTES = 16 * 1024 * 1024
+const SNIPPET_CONTEXT = 3
+const SNIPPET_MAX = 3
 
 const startsWith = (buf: Buffer, ...bytes: number[]) => bytes.every((b, i) => buf[i] === b)
 
@@ -42,7 +50,14 @@ function fsError(err: unknown, file: string): never {
   throw new DaemonError(`${file}: ${(err as Error).message}`)
 }
 
-export async function readFileForClaude(params: { path: string; offset?: number; limit?: number }): Promise<ReadFileResult> {
+export async function readFileForClaude(params: {
+  path: string
+  offset?: number
+  limit?: number
+  encoding?: 'utf8' | 'base64'
+  byteOffset?: number
+  byteLength?: number
+}): Promise<ReadFileResult> {
   if (typeof params.path !== 'string' || !params.path) throw new DaemonError('Kein Pfad angegeben.', 'BAD_REQUEST')
   const file = resolveUserPath(params.path)
   const offset = Math.max(0, params.offset ?? 0)
@@ -51,6 +66,23 @@ export async function readFileForClaude(params: { path: string; offset?: number;
   const info = await stat(file).catch((err) => fsError(err, file))
   if (info.isDirectory()) throw new DaemonError(`${file} ist ein Ordner. Inhalt z. B. mit run_command "ls -la ${file}".`, 'BAD_REQUEST')
   if (!info.isFile()) throw new DaemonError(`${file} ist keine normale Datei.`, 'BAD_REQUEST')
+
+  // Rohdaten als base64, in Stücken: für Binärdateien jeder Art.
+  if (params.encoding === 'base64') {
+    const start = Math.max(0, Math.floor(params.byteOffset ?? 0))
+    const want = Math.min(BASE64_MAX_BYTES, Math.max(1, Math.floor(params.byteLength ?? BASE64_DEFAULT_BYTES)))
+    const length = Math.max(0, Math.min(want, info.size - start))
+    const buf = Buffer.alloc(length)
+    if (length > 0) {
+      const handle = await open(file, 'r').catch((err) => fsError(err, file))
+      try {
+        await handle.read(buf, 0, length, start)
+      } finally {
+        await handle.close()
+      }
+    }
+    return { kind: 'base64', path: file, size: info.size, offset: start, length, data: buf.toString('base64'), hasMore: start + length < info.size }
+  }
 
   const handle = await open(file, 'r').catch((err) => fsError(err, file))
   let head: Buffer
@@ -161,4 +193,98 @@ export async function writeFileForClaude(params: {
 
   const after = await stat(file)
   return { path: file, bytesWritten: data.length, size: after.size, created: before === null }
+}
+
+const countOccurrences = (text: string, needle: string) => {
+  let n = 0
+  for (let i = text.indexOf(needle); i !== -1; i = text.indexOf(needle, i + needle.length)) n++
+  return n
+}
+
+// Schreibt über eine Temp-Datei im selben Ordner und rename: Wer die Datei liest, sieht nie einen halben Stand.
+// Rechte (und, wenn erlaubt, Besitzer) der alten Datei bleiben. Ist der Ordner nicht beschreibbar, wird in place geschrieben.
+async function writeAtomic(file: string, data: string, mode: number, uid: number, gid: number) {
+  const tmp = path.join(path.dirname(file), `.${path.basename(file)}.device-mcp-${randomBytes(4).toString('hex')}.tmp`)
+  try {
+    await writeFile(tmp, data, { mode: mode & 0o7777, flag: 'wx' })
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code
+    if (code !== 'EACCES' && code !== 'EPERM' && code !== 'EROFS') fsError(err, path.dirname(file))
+    await writeFile(file, data).catch((e) => fsError(e, file))
+    return { inPlace: true }
+  }
+  try {
+    await chmod(tmp, mode & 0o7777)
+    await chown(tmp, uid, gid).catch(() => {})
+    await rename(tmp, file)
+  } catch (err) {
+    await rm(tmp, { force: true })
+    fsError(err, file)
+  }
+  return { inPlace: false }
+}
+
+export async function editFileForClaude(params: { path: string; old_string: string; new_string: string; replace_all?: boolean }): Promise<EditFileResult> {
+  if (typeof params.path !== 'string' || !params.path) throw new DaemonError('Kein Pfad angegeben.', 'BAD_REQUEST')
+  if (typeof params.old_string !== 'string' || !params.old_string) throw new DaemonError('old_string darf nicht leer sein.', 'BAD_REQUEST')
+  if (typeof params.new_string !== 'string') throw new DaemonError('new_string fehlt.', 'BAD_REQUEST')
+  if (params.old_string === params.new_string) throw new DaemonError('old_string und new_string sind gleich, es gibt nichts zu ändern.', 'BAD_REQUEST')
+
+  // Symlinks auflösen: geändert wird die Zieldatei, der Link bleibt ein Link.
+  const file = await realpath(resolveUserPath(params.path)).catch((err) => fsError(err, resolveUserPath(params.path)))
+  const info = await stat(file).catch((err) => fsError(err, file))
+  if (!info.isFile()) throw new DaemonError(`${file} ist keine normale Datei.`, 'BAD_REQUEST')
+  if (info.size > EDIT_MAX_BYTES) throw new DaemonError(`${file} ist zu groß für edit_file (höchstens 16 MB).`, 'TOO_LARGE')
+
+  const buf = await readFile(file).catch((err) => fsError(err, file))
+  if (buf.includes(0)) throw new DaemonError(`${file} ist eine Binärdatei, edit_file ändert nur Text.`, 'BAD_REQUEST')
+  const text = buf.toString('utf8')
+
+  // Zeilenenden erhalten: Hat die Datei durchgehend CRLF, werden \n in old_string und new_string angeglichen.
+  const crlf = text.includes('\r\n') && !/(^|[^\r])\n/.test(text)
+  let oldS = params.old_string
+  let newS = params.new_string
+  if (crlf && !oldS.includes('\r\n')) {
+    oldS = oldS.replace(/\n/g, '\r\n')
+    newS = newS.replace(/\r?\n/g, '\r\n')
+  }
+
+  const count = countOccurrences(text, oldS)
+  if (count === 0) {
+    throw new DaemonError(
+      `old_string kommt in ${file} nicht vor (0 Treffer). Leerzeichen, Einrückung und Zeilenumbrüche müssen exakt stimmen; zum Nachsehen read_file nutzen.`,
+      'NO_MATCH',
+    )
+  }
+  if (count > 1 && !params.replace_all) {
+    throw new DaemonError(`old_string kommt in ${file} ${count}-mal vor. Mehr umgebenden Text angeben, damit es eindeutig ist, oder replace_all=true setzen.`, 'AMBIGUOUS')
+  }
+
+  // Neuen Text bauen und merken, wo die Ersetzungen landen.
+  const positions: number[] = []
+  let out = ''
+  let last = 0
+  for (let i = text.indexOf(oldS); i !== -1; i = params.replace_all ? text.indexOf(oldS, last) : -1) {
+    out += text.slice(last, i)
+    positions.push(out.length)
+    out += newS
+    last = i + oldS.length
+  }
+  out += text.slice(last)
+
+  const { inPlace } = await writeAtomic(file, out, info.mode, info.uid, info.gid)
+
+  // Kontext: ein paar Zeilen um die ersten Änderungen, mit Zeilennummern.
+  const lines = out.split('\n').map((l) => cleanFileLine(l))
+  const newLineCount = newS.split('\n').length
+  const snippets: EditFileResult['snippets'] = []
+  for (const pos of positions.slice(0, SNIPPET_MAX)) {
+    const line = out.slice(0, pos).split('\n').length - 1
+    const from = Math.max(0, line - SNIPPET_CONTEXT)
+    const to = Math.min(lines.length, line + newLineCount + SNIPPET_CONTEXT)
+    const prev = snippets[snippets.length - 1]
+    if (prev && from <= prev.fromLine - 1 + prev.lines.length) continue
+    snippets.push({ fromLine: from + 1, lines: lines.slice(from, to).map((l) => (l.length > 300 ? `${l.slice(0, 300)} …` : l)) })
+  }
+  return { path: file, replacements: positions.length, inPlace, crlf, snippets }
 }
