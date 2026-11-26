@@ -2,9 +2,10 @@ import { editFileForClaude, readFileForClaude, writeFileForClaude } from './file
 import type { JobManager, OutputParams } from './jobs.ts'
 import { DaemonError } from './protocol.ts'
 import { sessionKill, sessionList, sessionRead, sessionSend, sessionStart } from './sessions.ts'
+import type { Updater } from './update.ts'
 
 // Anfragen des Servers. Der Server ist vertrauenswürdig, die Parameter werden trotzdem grob geprüft.
-export function createHandlers(jobs: JobManager) {
+export function createHandlers(jobs: JobManager, updater: Updater) {
   return async (method: string, params: any): Promise<unknown> => {
     params ??= {}
     switch (method) {
@@ -35,6 +36,8 @@ export function createHandlers(jobs: JobManager) {
         return sessionList()
       case 'session_kill':
         return sessionKill(params)
+      case 'update':
+        return updater.run({ force: params.force === true })
       default:
         throw new DaemonError(`Unknown method ${method}. Is the daemon up to date?`, 'UNKNOWN_METHOD')
     }

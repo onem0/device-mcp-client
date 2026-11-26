@@ -11,5 +11,6 @@
     "@types/bun": "^1.4.4",
     "typescript": "^7.0.2"
   },
-  "description": "Daemon für device-mcp: führt Befehle und Dateizugriffe von Claude auf Linux- und macOS-Geräten aus."
+  "description": "Daemon für device-mcp: führt Befehle und Dateizugriffe von Claude auf Linux- und macOS-Geräten aus.",
+  "license": "MIT"
 }

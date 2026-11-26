@@ -1,5 +1,6 @@
-// Auto-Update: Der Server liefert unter /download/manifest.json die Version seiner Daemon-Binaries.
-// Ist sie neuer, lädt der Daemon sein Binary, prüft es, ersetzt sich selbst und lässt sich vom
+// Update des Daemons. Der Server fordert es an (Methode "update"): entweder weil im Panel jemand auf
+// „Update“ geklickt hat oder weil für das Gerät Auto-Update eingeschaltet ist. Von sich aus sucht der Daemon nicht.
+// Er lädt das Binary von seinem Server (/download), prüft es, ersetzt sich selbst und lässt sich vom
 // Service-Manager (systemd, launchd) neu starten, sobald kein Job mehr läuft.
 
 import { spawnSync } from 'node:child_process'
@@ -12,12 +13,15 @@ import { createGunzip } from 'node:zlib'
 import type { Config } from './config.ts'
 import type { JobManager } from './jobs.ts'
 import { log } from './log.ts'
+import { DaemonError, type UpdateResult } from './protocol.ts'
 import { VERSION } from './version.ts'
 
-const CHECK_EVERY_MS = 6 * 60 * 60_000
-// Nach einem fehlgeschlagenen Versuch dieselbe Version frühestens nach einer Stunde erneut probieren.
+// Nach einem fehlgeschlagenen Versuch probiert Auto-Update dieselbe Version frühestens nach einer Stunde erneut.
+// Ein Klick im Panel (force) versucht es sofort.
 const RETRY_AFTER_MS = 60 * 60_000
 const IDLE_POLL_MS = 15_000
+// So lange hat die Antwort an den Server Zeit, bevor der Daemon sich für den Neustart beendet.
+const RESTART_DELAY_MS = 1_500
 const FETCH_TIMEOUT_MS = 20_000
 const DOWNLOAD_TIMEOUT_MS = 10 * 60_000
 const MAX_BINARY_BYTES = 400 * 1024 * 1024
@@ -65,43 +69,30 @@ export class Updater {
   // Version, die schon auf der Platte liegt und auf den Neustart wartet.
   private staged: string | null = null
   private timers: Timer[] = []
-  private noBuildWarned = false
   private memoPath: string
   private execPath: string
   private compiled: boolean
   private supervised: boolean
+  private restartDelayMs: number
 
   // opts nur für Tests: ein Binary an anderer Stelle, ohne kompiliert oder als Service zu laufen.
   constructor(
-    private config: Pick<Config, 'serverUrl' | 'autoUpdate'>,
+    private config: Pick<Config, 'serverUrl'>,
     private jobs: Pick<JobManager, 'runningCount'>,
     private stateDir: string,
     private restart: () => void,
-    opts: { execPath?: string; compiled?: boolean; supervised?: boolean } = {},
+    opts: { execPath?: string; compiled?: boolean; supervised?: boolean; restartDelayMs?: number } = {},
   ) {
     this.memoPath = path.join(stateDir, 'update.json')
     this.execPath = opts.execPath ?? process.execPath
     this.compiled = opts.compiled ?? isCompiled()
     this.supervised = opts.supervised ?? isSupervised()
-  }
-
-  get enabled() {
-    return this.config.autoUpdate && process.env.DEVICE_MCP_NO_UPDATE !== '1' && this.compiled
+    this.restartDelayMs = opts.restartDelayMs ?? RESTART_DELAY_MS
+    if (this.compiled) this.cleanup()
   }
 
   get stagedVersion() {
     return this.staged
-  }
-
-  start() {
-    if (!this.enabled) {
-      if (!this.config.autoUpdate) log.info('Auto-update is turned off (autoUpdate: false in the config)')
-      return
-    }
-    this.cleanup()
-    const timer = setInterval(() => void this.check(), CHECK_EVERY_MS)
-    timer.unref?.()
-    this.timers.push(timer)
   }
 
   stop() {
@@ -109,48 +100,47 @@ export class Updater {
     this.timers = []
   }
 
-  // Nach jedem Verbindungsaufbau: Ein neuer Server bringt meist einen neuen Daemon mit.
-  // Etwas Streuung, damit nach einem Deploy nicht alle Geräte gleichzeitig laden.
-  checkSoon() {
-    if (!this.enabled || this.staged) return
-    const timer = setTimeout(() => void this.check(), 5_000 + Math.random() * 15_000)
-    timer.unref?.()
-    this.timers.push(timer)
-  }
-
-  async check() {
-    if (!this.enabled || this.busy || this.staged) return
+  // force: Klick im Panel. Ohne force (Auto-Update) gilt die Wartezeit nach einem Fehlschlag.
+  async run(opts: { force?: boolean } = {}): Promise<UpdateResult> {
+    if (!this.compiled) throw new DaemonError('This daemon was not started from an installed binary and cannot update itself.', 'UPDATE_UNSUPPORTED')
+    if (this.staged) return this.installed(this.staged)
+    if (this.busy) throw new DaemonError('An update is already running on the device.', 'BUSY')
     this.busy = true
     let target: string | null = null
     try {
       const manifest = await this.fetchManifest()
-      if (!manifest || compareVersions(manifest.version, VERSION) <= 0) return
+      if (compareVersions(manifest.version, VERSION) <= 0) return { status: 'current', version: VERSION }
       const binary = manifest.binaries[targetKey()]
-      if (!binary) {
-        if (!this.noBuildWarned) log.warn(`The server has daemon ${manifest.version}, but no build for ${targetKey()}. Staying on ${VERSION}.`)
-        this.noBuildWarned = true
-        return
+      if (!binary) throw new DaemonError(`The server has daemon ${manifest.version}, but no build for ${targetKey()}.`, 'NO_BUILD')
+      if (!opts.force && this.failedRecently(manifest.version)) {
+        throw new DaemonError(`The last update to ${manifest.version} failed less than an hour ago. Auto-update waits before the next try.`, 'UPDATE_BACKOFF')
       }
-      if (this.failedRecently(manifest.version)) return
       target = manifest.version
-      log.info(`Update available: ${VERSION} → ${target}, downloading`)
+      log.info(`Update requested: ${VERSION} → ${target}, downloading`)
       await this.install(target, binary)
       this.staged = target
       rmSync(this.memoPath, { force: true })
+      const result = this.installed(target)
       this.restartWhenIdle(target)
+      return result
     } catch (err) {
       const message = (err as Error).message
-      log.warn(`Update${target ? ` to ${target}` : ' check'} failed: ${message}`)
+      if ((err as DaemonError).code !== 'UPDATE_BACKOFF') log.warn(`Update${target ? ` to ${target}` : ''} failed: ${message}`)
       if (target) this.remember({ version: target, failedAt: new Date().toISOString(), error: message })
+      throw err instanceof DaemonError ? err : new DaemonError(message, 'UPDATE_FAILED')
     } finally {
       this.busy = false
     }
   }
 
-  private async fetchManifest(): Promise<Manifest | null> {
+  private installed(version: string): UpdateResult {
+    const runningJobs = this.jobs.runningCount()
+    return { status: 'installed', version, restart: !this.supervised ? 'manual' : runningJobs > 0 ? 'when_idle' : 'now', runningJobs }
+  }
+
+  private async fetchManifest(): Promise<Manifest> {
     const res = await fetch(`${this.config.serverUrl}/download/manifest.json`, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS), redirect: 'error' })
-    // Ältere Server kennen kein Manifest.
-    if (res.status === 404) return null
+    if (res.status === 404) throw new DaemonError('The server does not ship daemon builds.', 'NO_BUILD')
     if (!res.ok) throw new Error(`manifest: HTTP ${res.status}`)
     return parseManifest(await res.json())
   }
@@ -181,7 +171,7 @@ export class Updater {
       if (hash.digest('hex') !== binary.sha256) throw new Error('The checksum of the download does not match the manifest.')
 
       chmodSync(tmp, 0o755)
-      const probe = spawnSync(tmp, ['--version'], { encoding: 'utf8', timeout: 20_000, env: { ...process.env, DEVICE_MCP_NO_UPDATE: '1' } })
+      const probe = spawnSync(tmp, ['--version'], { encoding: 'utf8', timeout: 20_000 })
       const reported = probe.stdout?.trim()
       if (probe.status !== 0 || reported !== version) {
         throw new Error(`The new binary does not run here or reports ${reported || 'no version'} instead of ${version}.`)
@@ -213,9 +203,13 @@ export class Updater {
       this.restart()
       return true
     }
-    if (tryRestart()) return
-    const timer = setInterval(tryRestart, IDLE_POLL_MS)
-    this.timers.push(timer)
+    // Erst die Antwort an den Server hinauslassen.
+    this.timers.push(
+      setTimeout(() => {
+        if (tryRestart()) return
+        this.timers.push(setInterval(tryRestart, IDLE_POLL_MS))
+      }, this.restartDelayMs),
+    )
   }
 
   private failedRecently(version: string) {
@@ -232,7 +226,7 @@ export class Updater {
       mkdirSync(this.stateDir, { recursive: true, mode: 0o700 })
       writeFileSync(this.memoPath, `${JSON.stringify(memo, null, 2)}\n`, { mode: 0o600 })
     } catch {
-      // Ohne Merkzettel wird beim nächsten Verbindungsaufbau erneut versucht.
+      // Ohne Merkzettel versucht Auto-Update es beim nächsten Verbindungsaufbau erneut.
     }
   }
 

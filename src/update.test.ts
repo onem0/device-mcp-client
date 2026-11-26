@@ -9,6 +9,7 @@ import { VERSION } from './version.ts'
 // Ein "Binary" ist hier ein Shell-Script, das wie der Daemon auf --version antwortet.
 const fakeBinary = (version: string) => Buffer.from(`#!/bin/sh\necho ${version}\n`)
 const NEXT = '99.0.0'
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
 let dir: string
 let server: ReturnType<typeof Bun.serve>
@@ -43,17 +44,17 @@ afterEach(() => {
 const entry = (bytes: Buffer) => ({ sha256: createHash('sha256').update(bytes).digest('hex'), size: bytes.length })
 const manifestFor = (version: string, bytes: Buffer) => ({ version, binaries: { [`${process.platform}-${process.arch}`]: entry(bytes) } })
 
-function setup(opts: { running?: number; supervised?: boolean; autoUpdate?: boolean } = {}) {
+function setup(opts: { running?: number; supervised?: boolean; compiled?: boolean } = {}) {
   const execPath = path.join(dir, 'device-mcp')
   writeFileSync(execPath, fakeBinary(VERSION))
   chmodSync(execPath, 0o755)
   const state = { restarts: 0, running: opts.running ?? 0 }
   const updater = new Updater(
-    { serverUrl: `http://127.0.0.1:${server.port}`, autoUpdate: opts.autoUpdate ?? true },
+    { serverUrl: `http://127.0.0.1:${server.port}` },
     { runningCount: () => state.running },
     path.join(dir, 'state'),
     () => state.restarts++,
-    { execPath, compiled: true, supervised: opts.supervised ?? true },
+    { execPath, compiled: opts.compiled ?? true, supervised: opts.supervised ?? true, restartDelayMs: 10 },
   )
   return { execPath, state, updater }
 }
@@ -72,36 +73,45 @@ test('parseManifest rejects junk', () => {
   expect(parseManifest({ version: '1.0.0', binaries: {} }).version).toBe('1.0.0')
 })
 
-test('newer version: replaces the binary and restarts', async () => {
+test('newer version: replaces the binary, answers first, then restarts', async () => {
   const { execPath, state, updater } = setup()
   manifest = manifestFor(NEXT, binary)
-  await updater.check()
+  const result = await updater.run()
+  expect(result).toEqual({ status: 'installed', version: NEXT, restart: 'now', runningJobs: 0 })
   expect(readFileSync(execPath).equals(binary)).toBe(true)
-  expect(updater.stagedVersion).toBe(NEXT)
+  // Der Neustart kommt erst nach der Antwort.
+  expect(state.restarts).toBe(0)
+  await sleep(60)
   expect(state.restarts).toBe(1)
   expect(readdirSync(dir).filter((f) => f.startsWith('.device-mcp.update-'))).toEqual([])
 })
 
-test('same or older version, or no manifest: nothing happens', async () => {
+test('same or older version: reports current and downloads nothing', async () => {
   const { execPath, state, updater } = setup()
-  await updater.check()
   manifest = manifestFor(VERSION, binary)
-  await updater.check()
+  expect(await updater.run()).toEqual({ status: 'current', version: VERSION })
   manifest = manifestFor('0.0.1', binary)
-  await updater.check()
+  expect(await updater.run({ force: true })).toEqual({ status: 'current', version: VERSION })
   expect(downloads).toBe(0)
+  await sleep(40)
   expect(state.restarts).toBe(0)
   expect(readFileSync(execPath).equals(fakeBinary(VERSION))).toBe(true)
+})
+
+test('no manifest on the server: clear error', async () => {
+  const { updater } = setup()
+  await expect(updater.run()).rejects.toThrow(/does not ship daemon builds/)
 })
 
 test('waits for running jobs before restarting', async () => {
   const { execPath, state, updater } = setup({ running: 1 })
   manifest = manifestFor(NEXT, binary)
-  await updater.check()
+  expect(await updater.run()).toEqual({ status: 'installed', version: NEXT, restart: 'when_idle', runningJobs: 1 })
   expect(readFileSync(execPath).equals(binary)).toBe(true)
+  await sleep(60)
   expect(state.restarts).toBe(0)
-  // Ein zweiter Lauf lädt nicht noch einmal.
-  await updater.check()
+  // Ein zweiter Aufruf lädt nicht noch einmal und meldet denselben Stand.
+  expect((await updater.run({ force: true })).status).toBe('installed')
   expect(downloads).toBe(1)
   updater.stop()
 })
@@ -109,37 +119,46 @@ test('waits for running jobs before restarting', async () => {
 test('not running as a service: installs, but does not restart', async () => {
   const { execPath, state, updater } = setup({ supervised: false })
   manifest = manifestFor(NEXT, binary)
-  await updater.check()
+  expect((await updater.run()) as { restart?: string }).toMatchObject({ status: 'installed', restart: 'manual' })
   expect(readFileSync(execPath).equals(binary)).toBe(true)
+  await sleep(40)
   expect(state.restarts).toBe(0)
 })
 
-test('wrong checksum: keeps the old binary and waits before the next try', async () => {
+test('wrong checksum: keeps the old binary; auto-update waits, a click retries', async () => {
   const { execPath, state, updater } = setup()
   manifest = manifestFor(NEXT, fakeBinary('99.0.1'))
-  await updater.check()
+  await expect(updater.run()).rejects.toThrow(/checksum/)
+  await sleep(100)
   expect(readFileSync(execPath).equals(fakeBinary(VERSION))).toBe(true)
-  expect(state.restarts).toBe(0)
   expect(existsSync(path.join(dir, 'state', 'update.json'))).toBe(true)
   expect(readdirSync(dir).filter((f) => f.startsWith('.device-mcp.update-'))).toEqual([])
-  // Gleiche Version gleich noch einmal: kein neuer Download.
+
   manifest = manifestFor(NEXT, binary)
-  await updater.check()
+  // Auto-Update (ohne force): dieselbe Version nicht gleich noch einmal.
+  await expect(updater.run()).rejects.toThrow(/failed less than an hour ago/)
+  await sleep(20)
   expect(downloads).toBe(1)
+  // Klick im Panel: sofort.
+  expect((await updater.run({ force: true })).status).toBe('installed')
+  expect(downloads).toBe(2)
+  expect(existsSync(path.join(dir, 'state', 'update.json'))).toBe(false)
+  await sleep(60)
+  expect(state.restarts).toBe(1)
 })
 
 test('binary reports another version than the manifest: refused', async () => {
   const { execPath, state, updater } = setup()
   manifest = manifestFor('98.0.0', binary)
-  await updater.check()
+  await expect(updater.run()).rejects.toThrow(/reports 99\.0\.0 instead of 98\.0\.0/)
+  await sleep(100)
   expect(readFileSync(execPath).equals(fakeBinary(VERSION))).toBe(true)
   expect(state.restarts).toBe(0)
 })
 
-test('autoUpdate: false turns it off', async () => {
-  const { state, updater } = setup({ autoUpdate: false })
+test('started with bun instead of the binary: refuses', async () => {
+  const { updater } = setup({ compiled: false })
   manifest = manifestFor(NEXT, binary)
-  await updater.check()
+  await expect(updater.run()).rejects.toThrow(/cannot update itself/)
   expect(downloads).toBe(0)
-  expect(state.restarts).toBe(0)
 })

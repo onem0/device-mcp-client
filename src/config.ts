@@ -5,8 +5,6 @@ import { configPath } from './paths.ts'
 export interface Config {
   serverUrl: string
   token: string
-  // false: Der Daemon aktualisiert sich nicht selbst (Standard: true).
-  autoUpdate: boolean
 }
 
 export function loadConfig(): Config {
@@ -25,5 +23,5 @@ export function loadConfig(): Config {
   const mode = statSync(file).mode & 0o777
   if (mode & 0o077) log.warn(`${file} is readable by others (mode ${mode.toString(8)}). Recommended: chmod 600 ${file}`)
 
-  return { serverUrl: data.serverUrl.replace(/\/+$/, ''), token: data.token, autoUpdate: data.autoUpdate !== false }
+  return { serverUrl: data.serverUrl.replace(/\/+$/, ''), token: data.token }
 }

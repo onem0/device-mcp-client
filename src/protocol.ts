@@ -123,6 +123,12 @@ export interface SessionScreen {
   command: string
 }
 
+// Antwort auf "update". installed: Das neue Binary liegt auf der Platte.
+// restart now: Der Daemon startet gleich neu. when_idle: sobald kein Job mehr läuft. manual: Er läuft nicht als Service.
+export type UpdateResult =
+  | { status: 'current'; version: string }
+  | { status: 'installed'; version: string; restart: 'now' | 'when_idle' | 'manual'; runningJobs: number }
+
 export interface WriteFileResult {
   path: string
   bytesWritten: number

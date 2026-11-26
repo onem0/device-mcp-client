@@ -23,7 +23,7 @@ ${
     ? 'Usually runs as a launchd agent: launchctl print gui/$(id -u)/dev.onemo.device-mcp'
     : 'Usually runs as a systemd user service: systemctl --user status device-mcp'
 }
-Updates itself when the server ships a newer daemon (turn off with "autoUpdate": false in the config).
+Updates are started from the server's panel: by clicking Update there, or automatically if auto-update is on for this device.
 
 Config:    ${configPath()}
 Jobs/logs: ${stateDir()}/jobs
@@ -41,8 +41,6 @@ try {
 
 const jobs = new JobManager(stateDir())
 jobs.init()
-const connection = new Connection(config, jobs, createHandlers(jobs))
-
 let stopping = false
 function shutdown(reason: string) {
   if (stopping) process.exit(1)
@@ -56,10 +54,9 @@ function shutdown(reason: string) {
 
 // Nach einem Update beendet sich der Daemon, systemd bzw. launchd startet das neue Binary.
 const updater = new Updater(config, jobs, stateDir(), () => shutdown('Daemon stopping for the update'))
-connection.onReady = () => updater.checkSoon()
+const connection = new Connection(config, jobs, createHandlers(jobs, updater))
 
 log.info(`device-mcp ${VERSION} starting, server ${config.serverUrl}`)
-updater.start()
 connection.start()
 
 for (const signal of ['SIGTERM', 'SIGINT'] as const) process.on(signal, () => shutdown('Daemon stopping'))

@@ -2,7 +2,7 @@
 
 Der Daemon von [device-mcp](https://github.com/onem0/device-mcp-server). Er läuft auf jedem Gerät (Linux oder macOS), das Claude erreichen soll, baut von sich aus eine WebSocket-Verbindung (wss) zum Server auf und führt dessen Aufträge aus: Befehle über `bash -c`, Hintergrundjobs, Dateien lesen, schreiben und gezielt ändern, interaktive Sessions über tmux.
 
-Gebaut wird er mit `bun build --compile` als Single-Binary für Linux und macOS, jeweils x64 und arm64. Auf dem Gerät ist keine Runtime nötig. Der Server baut die Binaries aus diesem Repo (es ist dort als Submodule `daemon/` eingebunden) und liefert sie zusammen mit dem Installer und einem `manifest.json` (Version, Prüfsummen) aus. Daran erkennt der Daemon neue Versionen und aktualisiert sich selbst.
+Gebaut wird er mit `bun build --compile` als Single-Binary für Linux und macOS, jeweils x64 und arm64. Auf dem Gerät ist keine Runtime nötig. Der Server baut die Binaries aus diesem Repo (es ist dort als Submodule `daemon/` eingebunden) und liefert sie zusammen mit dem Installer und einem `manifest.json` (Version, Prüfsummen) aus. Fordert der Server ein Update an (Klick im Panel oder Auto-Update für das Gerät), holt sich der Daemon von dort die neue Version.
 
 ## Installieren
 
@@ -33,7 +33,7 @@ macOS: `launchctl print gui/$(id -u)/dev.onemo.device-mcp` (Status), `tail -f ~/
 | Pfad | Inhalt |
 |---|---|
 | `~/.local/bin/device-mcp` | Daemon |
-| `~/.config/device-mcp/config.json` | `serverUrl`, `token` und `autoUpdate` (chmod 600) |
+| `~/.config/device-mcp/config.json` | `serverUrl` und `token` (chmod 600) |
 | `~/.config/device-mcp/env` | Linux: PATH aus der Shell beim Installieren |
 | `~/.config/systemd/user/device-mcp.service` | Linux: systemd-Unit |
 | `~/Library/LaunchAgents/dev.onemo.device-mcp.plist` | macOS: LaunchAgent, enthält auch den PATH |
@@ -42,13 +42,13 @@ macOS: `launchctl print gui/$(id -u)/dev.onemo.device-mcp` (Status), `tail -f ~/
 | `~/.local/state/device-mcp/jobs/` | Status und Ausgabe der Jobs (letzte 300, höchstens 14 Tage) |
 | `~/.claude-tools/` | Helfer-Scripts von Claude mit README |
 
-Umgebungsvariablen zum Testen: `DEVICE_MCP_CONFIG` (Pfad zur Config), `DEVICE_MCP_STATE_DIR` (Job-Ordner), `DEVICE_MCP_NO_UPDATE=1` (kein Auto-Update). `DEVICE_MCP_SUPERVISED=1` setzen die Unit und die plist: Nur dann beendet sich der Daemon nach einem Update selbst.
+Umgebungsvariablen zum Testen: `DEVICE_MCP_CONFIG` (Pfad zur Config), `DEVICE_MCP_STATE_DIR` (Job-Ordner). `DEVICE_MCP_SUPERVISED=1` setzen die Unit und die plist: Nur dann beendet sich der Daemon nach einem Update selbst.
 
 ## Verhalten
 
 - **Verbindung:** wss auf `<serverUrl>/daemon/ws`. Der Token geht in der ersten Nachricht (`hello`) mit, nicht in der URL. Heartbeat alle 15 s; kommt vom Server länger als 45 s nichts, baut der Daemon die Verbindung neu auf.
 - **Reconnect:** exponentieller Backoff von 1 s bis 60 s mit Streuung. Abgelehnter Token: neuer Versuch alle 5 min, deaktiviertes Gerät: jede Minute.
-- **Auto-Update:** Nach jedem `welcome` (mit 5 bis 20 s Streuung) und alle sechs Stunden holt der Daemon `<serverUrl>/download/manifest.json`. Ist die Version dort neuer, lädt er `device-mcp-<platform>-<arch>.gz`, entpackt im Strom, prüft Größe und SHA-256, startet das neue Binary mit `--version`, ersetzt sich per `rename` und beendet sich, sobald kein Job mehr läuft; systemd bzw. launchd startet neu. Nur das kompilierte Binary tut das (`bun run dev` nie), kein Downgrade, nach einem Fehler dieselbe Version frühestens nach einer Stunde. Abschalten: `"autoUpdate": false` in der Config. Code in `src/update.ts`.
+- **Update:** Der Daemon sucht nicht selbst nach Updates. Der Server schickt die Anfrage `update` (Klick auf „Update“ im Panel, oder Auto-Update ist für das Gerät eingeschaltet und es verbindet sich mit einer älteren Version). Der Daemon holt dann `<serverUrl>/download/manifest.json`; ist die Version dort neuer, lädt er `device-mcp-<platform>-<arch>.gz`, entpackt im Strom, prüft Größe und SHA-256, startet das neue Binary mit `--version`, ersetzt sich per `rename`, antwortet dem Server und beendet sich, sobald kein Job mehr läuft; systemd bzw. launchd startet neu. Nur das kompilierte Binary tut das (`bun run dev` nie), kein Downgrade. Nach einem Fehler lehnt er Auto-Update-Anfragen für dieselbe Version eine Stunde lang ab, ein Klick (`force`) geht sofort. Code in `src/update.ts`.
 - **Jobs:** Jeder Befehl ist ein Job in einer eigenen Prozessgruppe (`bash -c`, ohne TTY, stdin leer). Die Ausgabe landet auf der Platte, deshalb überleben Jobs und Ausgabe einen Verbindungsabbruch. Nach dem Reconnect meldet der Daemon den Stand aller Jobs. Timeout und `kill_job` schicken SIGTERM an die ganze Gruppe, nach 5 s SIGKILL. Ein Neustart des Daemons beendet laufende Jobs.
 - **Ausgabe:** Farbcodes werden entfernt, Fortschrittsbalken mit `\r` auf den letzten Stand gekürzt, Zeilen über 2000 Zeichen gekürzt. Pro Job höchstens 64 MB Log.
 - **Dateien:** Text zeilenweise mit offset/limit, PNG/JPEG/GIF/WebP als Bild (höchstens 3,75 MB), andere Binärdateien werden nur beschrieben; mit `encoding: base64` kommen Rohdaten in Stücken (höchstens 1 MB pro Aufruf). Schreiben legt fehlende Ordner an, höchstens 16 MB pro Aufruf.
@@ -62,7 +62,7 @@ Das Nachrichtenformat steht in `src/protocol.ts`, das Gegenstück im Server in `
 ```bash
 bun install
 bun run typecheck
-bun test                 # edit_file, Auto-Update und tmux-Sessions (Session-Tests werden ohne tmux übersprungen)
+bun test                 # edit_file, Update und tmux-Sessions (Session-Tests werden ohne tmux übersprungen)
 bun run build            # dist/device-mcp-{linux,darwin}-{x64,arm64}, jeweils auch .gz, dazu dist/manifest.json
 bun run build.ts arm64   # nur eine Architektur (oder linux, darwin, linux-arm64 …)
 ```
@@ -84,4 +84,8 @@ git submodule update --remote daemon
 git commit -am "Daemon aktualisiert" && git push   # Coolify baut neu
 ```
 
-Vorher `VERSION` in `src/version.ts` erhöhen: Nur eine höhere Version löst das Auto-Update aus. Nach dem Deploy holen sich die Geräte das neue Binary selbst, sobald kein Job mehr läuft. Daemons vor 0.3.0 brauchen das Install-Script ein letztes Mal von Hand. Ältere Daemons bekommen für neue Tools vom Server die Meldung „Daemon-Version zu alt“. `VERSION` in `src/version.ts` und die Mindestversionen in `server/src/services/guards.ts` gehören zusammen.
+Vorher `VERSION` in `src/version.ts` erhöhen: Nur eine höhere Version gilt als Update. Nach dem Deploy zeigt das Panel bei jedem Gerät den Button „Update“; Geräte mit eingeschaltetem Auto-Update holen sich das neue Binary selbst, sobald kein Job mehr läuft. Daemons vor 0.4.0 brauchen das Install-Script ein letztes Mal von Hand. Ältere Daemons bekommen für neue Tools vom Server die Meldung „Daemon-Version zu alt“. `VERSION` in `src/version.ts` und die Mindestversionen in `server/src/services/guards.ts` gehören zusammen.
+
+## Lizenz
+
+MIT, siehe [LICENSE](LICENSE).
