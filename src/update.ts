@@ -1,6 +1,6 @@
 // Daemon update. The server requests it (method "update"): either because someone clicked
 // “Update” in the panel or because Auto-update is switched on for the device. The daemon does not look for updates by itself.
-// It downloads the binary from its server (/download), verifies it, replaces itself and lets the
+// It downloads the binary from the GitHub releases (see release.ts), verifies it, replaces itself and lets the
 // service manager (systemd, launchd) restart it as soon as no job is running any more.
 
 import { spawnSync } from 'node:child_process'
@@ -10,10 +10,10 @@ import path from 'node:path'
 import { Readable, Transform } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { createGunzip } from 'node:zlib'
-import type { Config } from './config.ts'
 import type { JobManager } from './jobs.ts'
 import { log } from './log.ts'
 import { DaemonError, type UpdateResult } from './protocol.ts'
+import { binaryUrl, manifestUrl, releaseBase } from './release.ts'
 import { VERSION } from './version.ts'
 
 // After a failed attempt, Auto-update retries the same version after one hour at the earliest.
@@ -74,20 +74,21 @@ export class Updater {
   private compiled: boolean
   private supervised: boolean
   private restartDelayMs: number
+  private defaultReleaseUrl: string | undefined
 
   // opts only for tests: a binary in a different location, without being compiled or running as a service.
   constructor(
-    private config: Pick<Config, 'serverUrl'>,
     private jobs: Pick<JobManager, 'runningCount'>,
     private stateDir: string,
     private restart: () => void,
-    opts: { execPath?: string; compiled?: boolean; supervised?: boolean; restartDelayMs?: number } = {},
+    opts: { execPath?: string; compiled?: boolean; supervised?: boolean; restartDelayMs?: number; releaseUrl?: string } = {},
   ) {
     this.memoPath = path.join(stateDir, 'update.json')
     this.execPath = opts.execPath ?? process.execPath
     this.compiled = opts.compiled ?? isCompiled()
     this.supervised = opts.supervised ?? isSupervised()
     this.restartDelayMs = opts.restartDelayMs ?? RESTART_DELAY_MS
+    this.defaultReleaseUrl = opts.releaseUrl
     if (this.compiled) this.cleanup()
   }
 
@@ -101,14 +102,16 @@ export class Updater {
   }
 
   // force: click in the panel. Without force (Auto-update) the waiting period after a failure applies.
-  async run(opts: { force?: boolean } = {}): Promise<UpdateResult> {
+  // releaseUrl: release location named by the server; without it the daemon uses its built-in one.
+  async run(opts: { force?: boolean; releaseUrl?: string } = {}): Promise<UpdateResult> {
     if (!this.compiled) throw new DaemonError('This daemon was not started from an installed binary and cannot update itself.', 'UPDATE_UNSUPPORTED')
     if (this.staged) return this.installed(this.staged)
     if (this.busy) throw new DaemonError('An update is already running on the device.', 'BUSY')
     this.busy = true
     let target: string | null = null
     try {
-      const manifest = await this.fetchManifest()
+      const base = releaseBase(opts.releaseUrl ?? this.defaultReleaseUrl)
+      const manifest = await this.fetchManifest(base)
       if (compareVersions(manifest.version, VERSION) <= 0) return { status: 'current', version: VERSION }
       const binary = manifest.binaries[targetKey()]
       if (!binary) throw new DaemonError(`The server has daemon ${manifest.version}, but no build for ${targetKey()}.`, 'NO_BUILD')
@@ -117,7 +120,7 @@ export class Updater {
       }
       target = manifest.version
       log.info(`Update requested: ${VERSION} → ${target}, downloading`)
-      await this.install(target, binary)
+      await this.install(base, target, binary)
       this.staged = target
       rmSync(this.memoPath, { force: true })
       const result = this.installed(target)
@@ -138,21 +141,19 @@ export class Updater {
     return { status: 'installed', version, restart: !this.supervised ? 'manual' : runningJobs > 0 ? 'when_idle' : 'now', runningJobs }
   }
 
-  private async fetchManifest(): Promise<Manifest> {
-    const res = await fetch(`${this.config.serverUrl}/download/manifest.json`, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS), redirect: 'error' })
-    if (res.status === 404) throw new DaemonError('The server does not ship daemon builds.', 'NO_BUILD')
+  // GitHub answers release downloads with a redirect to its file storage, so redirects are followed.
+  private async fetchManifest(base: string): Promise<Manifest> {
+    const res = await fetch(manifestUrl(base), { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) })
+    if (res.status === 404) throw new DaemonError(`No daemon release found at ${base}.`, 'NO_BUILD')
     if (!res.ok) throw new Error(`manifest: HTTP ${res.status}`)
     return parseManifest(await res.json())
   }
 
-  private async install(version: string, binary: { sha256: string; size: number }) {
+  private async install(base: string, version: string, binary: { sha256: string; size: number }) {
     if (!Number.isInteger(binary.size) || binary.size <= 0 || binary.size > MAX_BINARY_BYTES) throw new Error('The manifest gives an implausible binary size.')
     const tmp = path.join(path.dirname(this.execPath), `${TMP_PREFIX}${process.pid}`)
     try {
-      const res = await fetch(`${this.config.serverUrl}/download/device-mcp-${targetKey()}.gz`, {
-        signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS),
-        redirect: 'error',
-      })
+      const res = await fetch(binaryUrl(base, version, targetKey()), { signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) })
       if (!res.ok || !res.body) throw new Error(`download: HTTP ${res.status}`)
 
       // Decompress and hash as a stream, so that a small device does not hold 100 MB in memory.

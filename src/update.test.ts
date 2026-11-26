@@ -26,8 +26,10 @@ beforeEach(() => {
     port: 0,
     fetch(req) {
       const { pathname } = new URL(req.url)
-      if (pathname === '/download/manifest.json') return manifest ? Response.json(manifest) : new Response('no', { status: 404 })
-      if (pathname === `/download/device-mcp-${process.platform}-${process.arch}.gz`) {
+      // Same layout as GitHub releases: /latest/download/<asset> and /download/v<version>/<asset>.
+      if (pathname === '/latest/download/manifest.json') return manifest ? Response.json(manifest) : new Response('no', { status: 404 })
+      const asset = /^\/download\/v([^/]+)\/(.+)$/.exec(pathname)
+      if (asset && asset[1] === (manifest as { version?: string } | null)?.version && asset[2] === `device-mcp-${process.platform}-${process.arch}.gz`) {
         downloads++
         return new Response(Bun.gzipSync(new Uint8Array(binary)))
       }
@@ -50,11 +52,10 @@ function setup(opts: { running?: number; supervised?: boolean; compiled?: boolea
   chmodSync(execPath, 0o755)
   const state = { restarts: 0, running: opts.running ?? 0 }
   const updater = new Updater(
-    { serverUrl: `http://127.0.0.1:${server.port}` },
     { runningCount: () => state.running },
     path.join(dir, 'state'),
     () => state.restarts++,
-    { execPath, compiled: opts.compiled ?? true, supervised: opts.supervised ?? true, restartDelayMs: 10 },
+    { execPath, compiled: opts.compiled ?? true, supervised: opts.supervised ?? true, restartDelayMs: 10, releaseUrl: `http://127.0.0.1:${server.port}` },
   )
   return { execPath, state, updater }
 }
@@ -100,7 +101,7 @@ test('same or older version: reports current and downloads nothing', async () =>
 
 test('no manifest on the server: clear error', async () => {
   const { updater } = setup()
-  await expect(updater.run()).rejects.toThrow(/does not ship daemon builds/)
+  await expect(updater.run()).rejects.toThrow(/No daemon release found/)
 })
 
 test('waits for running jobs before restarting', async () => {
@@ -161,4 +162,14 @@ test('started with bun instead of the binary: refuses', async () => {
   manifest = manifestFor(NEXT, binary)
   await expect(updater.run()).rejects.toThrow(/cannot update itself/)
   expect(downloads).toBe(0)
+})
+
+test('the server can name another release location', async () => {
+  const { execPath, updater } = setup()
+  manifest = manifestFor(NEXT, binary)
+  await expect(updater.run({ releaseUrl: 'ftp://example.invalid/releases' })).rejects.toThrow(/not an http\(s\) URL/)
+  await expect(updater.run({ releaseUrl: `http://127.0.0.1:${server.port}/nowhere` })).rejects.toThrow(/No daemon release found/)
+  expect((await updater.run({ releaseUrl: `http://127.0.0.1:${server.port}/` })).status).toBe('installed')
+  expect(readFileSync(execPath).equals(binary)).toBe(true)
+  updater.stop()
 })

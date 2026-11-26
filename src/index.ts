@@ -53,7 +53,7 @@ function shutdown(reason: string) {
 }
 
 // After an update the daemon exits; systemd or launchd starts the new binary.
-const updater = new Updater(config, jobs, stateDir(), () => shutdown('Daemon stopping for the update'))
+const updater = new Updater(jobs, stateDir(), () => shutdown('Daemon stopping for the update'))
 const connection = new Connection(config, jobs, createHandlers(jobs, updater))
 
 log.info(`device-mcp ${VERSION} starting, server ${config.serverUrl}`)

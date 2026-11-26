@@ -2,7 +2,7 @@
 
 The daemon of [device-mcp](https://github.com/onem0/device-mcp-server). It runs on every device (Linux or macOS) that Claude should reach, opens a WebSocket connection (wss) to the server on its own and carries out the server's requests: commands via `bash -c`, background jobs, reading, writing and making targeted edits to files, interactive sessions via tmux.
 
-It is built with `bun build --compile` as a single binary for Linux and macOS, each for x64 and arm64. No runtime is needed on the device. The server builds the binaries from this repo (it is included there as the submodule `daemon/`) and serves them together with the installer and a `manifest.json` (version, checksums). When the server requests an update (a click in the panel or Auto-update for the device), the daemon fetches the new version from there.
+It is built with `bun build --compile` as a single binary for Linux and macOS, each for x64 and arm64. No runtime is needed on the device. The binaries are published as [GitHub releases](https://github.com/onem0/device-mcp-client/releases) of this repo: every release carries the four gzipped binaries and a `manifest.json` (version, checksums). The server's install script downloads the daemon from the latest release, and so does the daemon itself when the server requests an update (a click in the panel or Auto-update for the device). The server does not build or host the daemon.
 
 ## Installation
 
@@ -48,7 +48,7 @@ Environment variables for testing: `DEVICE_MCP_CONFIG` (path to the config), `DE
 
 - **Connection:** wss to `<serverUrl>/daemon/ws`. The token is sent in the first message (`hello`), not in the URL. Heartbeat every 15 s; if nothing arrives from the server for more than 45 s, the daemon re-establishes the connection.
 - **Reconnect:** exponential backoff from 1 s to 60 s with jitter. Rejected token: retry every 5 min, disabled device: every minute.
-- **Update:** The daemon does not look for updates itself. The server sends the `update` request (a click on “Update” in the panel, or Auto-update is switched on for the device and it connects with an older version). The daemon then fetches `<serverUrl>/download/manifest.json`; if the version there is newer, it downloads `device-mcp-<platform>-<arch>.gz`, decompresses it as a stream, checks size and SHA-256, runs the new binary with `--version`, replaces itself via `rename`, replies to the server and exits as soon as no job is running any more; systemd or launchd restarts it. Only the compiled binary does this (`bun run dev` never does), no downgrade. After a failure it rejects Auto-update requests for the same version for one hour; a click (`force`) goes through right away. Code in `src/update.ts`.
+- **Update:** The daemon does not look for updates itself. The server sends the `update` request (a click on “Update” in the panel, or Auto-update is switched on for the device and a newer release exists). The daemon then fetches `manifest.json` of the latest GitHub release (`…/releases/latest/download/manifest.json`); if the version there is newer, it downloads `device-mcp-<platform>-<arch>.gz` of exactly that release (`…/releases/download/v<version>/…`), unpacks it as a stream, checks size and SHA-256, starts the new binary with `--version`, replaces itself via `rename`, answers the server and exits as soon as no job is running any more; systemd or launchd restarts it. Only the compiled binary does this (`bun run dev` never), and there is no downgrade. After a failure it rejects Auto-update requests for the same version for one hour; a click (`force`) works right away. The release location is built in (`src/release.ts`); a server can name another one in its request, e.g. for a fork. Code in `src/update.ts`.
 - **Jobs:** Every command is a job in its own process group (`bash -c`, no TTY, empty stdin). The output goes to disk, so jobs and their output survive a dropped connection. After the reconnect the daemon reports the state of all jobs. Timeout and `kill_job` send SIGTERM to the whole group, SIGKILL after 5 s. A restart of the daemon ends running jobs.
 - **Output:** Colour codes are removed, progress bars using `\r` are reduced to their last state, lines over 2000 characters are truncated. At most 64 MB of log per job.
 - **Files:** Text line by line with offset/limit, PNG/JPEG/GIF/WebP as an image (at most 3.75 MB), other binary files are only described; with `encoding: base64` the raw data comes in chunks (at most 1 MB per call). Writing creates missing directories, at most 16 MB per call.
@@ -74,17 +74,19 @@ printf '{"serverUrl":"http://127.0.0.1:3100","token":"dmcp_…"}' > /tmp/dmcp.js
 DEVICE_MCP_CONFIG=/tmp/dmcp.json DEVICE_MCP_STATE_DIR=/tmp/dmcp-state bun run dev
 ```
 
-## Rollout
+## Releases
 
-On deploy, the server builds the daemon from the commit its submodule points to:
+Bump `VERSION` in `src/version.ts` and push to `main`. The workflow `.github/workflows/release.yml` then runs the checks, builds all four binaries and publishes the release `v<version>` with the binaries and `manifest.json`. A push without a new version publishes nothing.
 
 ```bash
-# commit and push here, then in the server repo:
-git submodule update --remote daemon
-git commit -am "Update daemon" && git push   # Coolify rebuilds
+# after changing src/version.ts
+git commit -am "0.5.1" && git push
+gh run watch            # optional: follow the release build
 ```
 
-Before that, bump `VERSION` in `src/version.ts`: only a higher version counts as an update. After the deploy the panel shows the “Update” button for every device; devices with Auto-update switched on fetch the new binary themselves as soon as no job is running any more. Daemons older than 0.4.0 need the install script run by hand one last time. For new tools, older daemons get the message “Daemon version too old” from the server. `VERSION` in `src/version.ts` and the minimum versions in `server/src/services/guards.ts` belong together.
+Servers notice the new release within a few minutes: the panel shows the “Update” button for every device, and devices with Auto-update switched on update themselves as soon as no job is running. Daemons before 0.4.0 need the install script by hand one last time. Older daemons get the message “Daemon version too old” from the server for new tools. `VERSION` in `src/version.ts` and the minimum versions in `server/src/services/guards.ts` belong together.
+
+A fork publishes its own releases the same way; point the server at them with `DAEMON_RELEASE_URL` and change `DEFAULT_RELEASE_URL` in `src/release.ts`.
 
 ## License
 

@@ -37,7 +37,7 @@ export function createHandlers(jobs: JobManager, updater: Updater) {
       case 'session_kill':
         return sessionKill(params)
       case 'update':
-        return updater.run({ force: params.force === true })
+        return updater.run({ force: params.force === true, releaseUrl: typeof params.releaseUrl === 'string' ? params.releaseUrl : undefined })
       default:
         throw new DaemonError(`Unknown method ${method}. Is the daemon up to date?`, 'UNKNOWN_METHOD')
     }
