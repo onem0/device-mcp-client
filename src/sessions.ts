@@ -57,7 +57,9 @@ async function tmux(args: string[]): Promise<RunResult> {
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
       throw new DaemonError(
-        'tmux is not installed on this device. Install it, e.g. with run_command: sudo apt install -y tmux (Debian/Ubuntu/Raspberry Pi OS) or sudo dnf install -y tmux (Fedora).',
+        process.platform === 'darwin'
+          ? 'tmux is not installed on this device. Install it, e.g. with run_command: brew install tmux (needs Homebrew).'
+          : 'tmux is not installed on this device. Install it, e.g. with run_command: sudo apt install -y tmux (Debian/Ubuntu/Raspberry Pi OS) or sudo dnf install -y tmux (Fedora).',
         'TMUX_MISSING',
       )
     }
@@ -146,6 +148,9 @@ export async function sessionStart(params: { name?: string; cwd?: string; comman
     else if (res && !(await exists(name))) res = null
   }
   if (!res) res = await tmux(args)
+  // macOS: Der tmux-Server löst sich in eine eigene Sitzung ab, und launchd beendet beim Neustart
+  // des Daemons nur dessen Prozessgruppe. Die Session übersteht ihn also auch ohne systemd-run.
+  if (process.platform === 'darwin') detachedFromDaemon = true
   if (res.code !== 0 && !(await exists(name))) {
     throw new DaemonError(`tmux could not start the session: ${res.stderr.trim() || `exit ${res.code}`}`, 'TMUX_ERROR')
   }

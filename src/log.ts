@@ -1,5 +1,6 @@
-// journald versieht die Zeilen mit Zeitstempel, im Terminal hilft er trotzdem.
-const stamp = () => (process.stderr.isTTY ? `${new Date().toISOString()} ` : '')
+// journald versieht die Zeilen selbst mit Zeitstempel (systemd setzt dann JOURNAL_STREAM).
+// Im Terminal und in der Logdatei unter macOS (launchd) schreibt der Daemon ihn dazu.
+const stamp = () => (process.env.JOURNAL_STREAM ? '' : `${new Date().toISOString()} `)
 
 export const log = {
   info: (msg: string) => console.log(`${stamp()}${msg}`),

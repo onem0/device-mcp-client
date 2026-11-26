@@ -30,6 +30,8 @@ export class Connection {
   private heartbeatTimeoutMs = 45_000
   private timers: Timer[] = []
   private reconnectTimer: Timer | null = null
+  // Nach jedem welcome, z. B. für die Update-Prüfung.
+  onReady: (() => void) | null = null
 
   constructor(
     private config: Config,
@@ -120,6 +122,7 @@ export class Connection {
           }, 5_000),
         )
         log.info(`Connected to ${this.config.serverUrl} as "${msg.name}"`)
+        this.onReady?.()
         return
       }
       case 'heartbeat_ack':

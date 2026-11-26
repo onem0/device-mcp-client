@@ -265,6 +265,12 @@ export class JobManager extends EventEmitter<{ exit: [JobSummary] }> {
     })
   }
 
+  runningCount() {
+    let n = 0
+    for (const job of this.jobs.values()) if (job.running) n++
+    return n
+  }
+
   // Beim Beenden des Daemons: laufende Jobs nicht als Waisen zurücklassen.
   killAll() {
     for (const job of this.jobs.values()) {
