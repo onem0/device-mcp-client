@@ -6,7 +6,7 @@ import path from 'node:path'
 import { compareVersions, parseManifest, Updater } from './update.ts'
 import { VERSION } from './version.ts'
 
-// Ein "Binary" ist hier ein Shell-Script, das wie der Daemon auf --version antwortet.
+// A "binary" here is a shell script that answers --version like the daemon does.
 const fakeBinary = (version: string) => Buffer.from(`#!/bin/sh\necho ${version}\n`)
 const NEXT = '99.0.0'
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -79,7 +79,7 @@ test('newer version: replaces the binary, answers first, then restarts', async (
   const result = await updater.run()
   expect(result).toEqual({ status: 'installed', version: NEXT, restart: 'now', runningJobs: 0 })
   expect(readFileSync(execPath).equals(binary)).toBe(true)
-  // Der Neustart kommt erst nach der Antwort.
+  // The restart only comes after the reply.
   expect(state.restarts).toBe(0)
   await sleep(60)
   expect(state.restarts).toBe(1)
@@ -110,7 +110,7 @@ test('waits for running jobs before restarting', async () => {
   expect(readFileSync(execPath).equals(binary)).toBe(true)
   await sleep(60)
   expect(state.restarts).toBe(0)
-  // Ein zweiter Aufruf lädt nicht noch einmal und meldet denselben Stand.
+  // A second call does not download again and reports the same state.
   expect((await updater.run({ force: true })).status).toBe('installed')
   expect(downloads).toBe(1)
   updater.stop()
@@ -135,11 +135,11 @@ test('wrong checksum: keeps the old binary; auto-update waits, a click retries',
   expect(readdirSync(dir).filter((f) => f.startsWith('.device-mcp.update-'))).toEqual([])
 
   manifest = manifestFor(NEXT, binary)
-  // Auto-Update (ohne force): dieselbe Version nicht gleich noch einmal.
+  // Auto-update (without force): not the same version again right away.
   await expect(updater.run()).rejects.toThrow(/failed less than an hour ago/)
   await sleep(20)
   expect(downloads).toBe(1)
-  // Klick im Panel: sofort.
+  // Click in the panel: right away.
   expect((await updater.run({ force: true })).status).toBe('installed')
   expect(downloads).toBe(2)
   expect(existsSync(path.join(dir, 'state', 'update.json'))).toBe(false)

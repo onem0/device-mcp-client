@@ -52,7 +52,7 @@ function shutdown(reason: string) {
   setTimeout(() => process.exit(0), 1_000).unref?.()
 }
 
-// Nach einem Update beendet sich der Daemon, systemd bzw. launchd startet das neue Binary.
+// After an update the daemon exits; systemd or launchd starts the new binary.
 const updater = new Updater(config, jobs, stateDir(), () => shutdown('Daemon stopping for the update'))
 const connection = new Connection(config, jobs, createHandlers(jobs, updater))
 

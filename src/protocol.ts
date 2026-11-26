@@ -1,5 +1,5 @@
-// Nachrichten zwischen Daemon und Server über /daemon/ws (JSON, eine Nachricht pro Frame).
-// Gegenstück: server/src/services/protocol.ts. Änderungen immer in beiden Dateien nachziehen.
+// Messages between daemon and server over /daemon/ws (JSON, one message per frame).
+// Counterpart: server/src/services/protocol.ts. Always apply changes to both files.
 
 export const PROTOCOL_VERSION = 1
 
@@ -36,7 +36,7 @@ export interface JobSummary {
   finishedAt: string | null
   durationMs: number | null
   timeoutMs: number | null
-  // -1, solange der Zeilenindex eines alten Jobs nicht geladen ist.
+  // -1 as long as the line index of an old job is not loaded.
   outputLines: number
   outputBytes: number
   outputTruncated: boolean
@@ -81,16 +81,16 @@ export type ReadFileResult =
     }
   | { kind: 'image'; path: string; size: number; mimeType: string; data: string }
   | { kind: 'binary'; path: string; size: number; mimeType: string | null }
-  // read_file mit encoding=base64: ein Byte-Bereich der Datei.
+  // read_file with encoding=base64: a byte range of the file.
   | { kind: 'base64'; path: string; size: number; offset: number; length: number; data: string; hasMore: boolean }
 
 export interface EditFileResult {
   path: string
   replacements: number
-  // true, wenn nicht atomar geschrieben werden konnte (Ordner nicht beschreibbar).
+  // true if the write could not be done atomically (directory not writable).
   inPlace: boolean
   crlf: boolean
-  // Ausschnitte rund um die ersten Änderungen, Zeilennummern 1-basiert.
+  // Snippets around the first changes, line numbers 1-based.
   snippets: { fromLine: number; lines: string[] }[]
 }
 
@@ -110,7 +110,7 @@ export interface SessionStartResult {
   cwd: string
   cols: number
   rows: number
-  // true, wenn der tmux-Server außerhalb des Daemon-Prozesses läuft (systemd-run) und einen Neustart übersteht.
+  // true if the tmux server runs outside the daemon process (systemd-run) and survives a restart.
   detachedFromDaemon: boolean
 }
 
@@ -123,8 +123,8 @@ export interface SessionScreen {
   command: string
 }
 
-// Antwort auf "update". installed: Das neue Binary liegt auf der Platte.
-// restart now: Der Daemon startet gleich neu. when_idle: sobald kein Job mehr läuft. manual: Er läuft nicht als Service.
+// Reply to "update". installed: the new binary is on disk.
+// restart now: the daemon restarts right away. when_idle: as soon as no job is running. manual: it does not run as a service.
 export type UpdateResult =
   | { status: 'current'; version: string }
   | { status: 'installed'; version: string; restart: 'now' | 'when_idle' | 'manual'; runningJobs: number }
@@ -136,7 +136,7 @@ export interface WriteFileResult {
   created: boolean
 }
 
-// Vom Daemon gemeldeter Fehler, geht als { ok: false, error } an den Server.
+// Error reported by the daemon; goes to the server as { ok: false, error }.
 export class DaemonError extends Error {
   constructor(
     message: string,

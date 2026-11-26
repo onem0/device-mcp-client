@@ -4,7 +4,7 @@ import { DaemonError } from './protocol.ts'
 import { sessionKill, sessionList, sessionRead, sessionSend, sessionStart } from './sessions.ts'
 import type { Updater } from './update.ts'
 
-// Anfragen des Servers. Der Server ist vertrauenswürdig, die Parameter werden trotzdem grob geprüft.
+// Requests from the server. The server is trusted; the parameters are still roughly checked.
 export function createHandlers(jobs: JobManager, updater: Updater) {
   return async (method: string, params: any): Promise<unknown> => {
     params ??= {}

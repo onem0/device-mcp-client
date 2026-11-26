@@ -1,7 +1,7 @@
-// Update des Daemons. Der Server fordert es an (Methode "update"): entweder weil im Panel jemand auf
-// „Update“ geklickt hat oder weil für das Gerät Auto-Update eingeschaltet ist. Von sich aus sucht der Daemon nicht.
-// Er lädt das Binary von seinem Server (/download), prüft es, ersetzt sich selbst und lässt sich vom
-// Service-Manager (systemd, launchd) neu starten, sobald kein Job mehr läuft.
+// Daemon update. The server requests it (method "update"): either because someone clicked
+// “Update” in the panel or because Auto-update is switched on for the device. The daemon does not look for updates by itself.
+// It downloads the binary from its server (/download), verifies it, replaces itself and lets the
+// service manager (systemd, launchd) restart it as soon as no job is running any more.
 
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
@@ -16,11 +16,11 @@ import { log } from './log.ts'
 import { DaemonError, type UpdateResult } from './protocol.ts'
 import { VERSION } from './version.ts'
 
-// Nach einem fehlgeschlagenen Versuch probiert Auto-Update dieselbe Version frühestens nach einer Stunde erneut.
-// Ein Klick im Panel (force) versucht es sofort.
+// After a failed attempt, Auto-update retries the same version after one hour at the earliest.
+// A click in the panel (force) tries right away.
 const RETRY_AFTER_MS = 60 * 60_000
 const IDLE_POLL_MS = 15_000
-// So lange hat die Antwort an den Server Zeit, bevor der Daemon sich für den Neustart beendet.
+// This is how long the reply to the server has before the daemon exits for the restart.
 const RESTART_DELAY_MS = 1_500
 const FETCH_TIMEOUT_MS = 20_000
 const DOWNLOAD_TIMEOUT_MS = 10 * 60_000
@@ -58,15 +58,15 @@ export function parseManifest(data: unknown): Manifest {
 
 export const targetKey = () => `${process.platform}-${process.arch}`
 
-// Nur ein kompiliertes Binary ersetzt sich selbst. Mit `bun run src/index.ts` wäre execPath Bun selbst.
+// Only a compiled binary replaces itself. With `bun run src/index.ts`, execPath would be Bun itself.
 export const isCompiled = () => Bun.main.startsWith('/$bunfs/')
 
-// Die Unit-Datei und die launchd-plist setzen DEVICE_MCP_SUPERVISED. INVOCATION_ID setzt systemd für jeden Service.
+// The unit file and the launchd plist set DEVICE_MCP_SUPERVISED. systemd sets INVOCATION_ID for every service.
 const isSupervised = () => process.env.DEVICE_MCP_SUPERVISED === '1' || !!process.env.INVOCATION_ID
 
 export class Updater {
   private busy = false
-  // Version, die schon auf der Platte liegt und auf den Neustart wartet.
+  // Version that is already on disk and waiting for the restart.
   private staged: string | null = null
   private timers: Timer[] = []
   private memoPath: string
@@ -75,7 +75,7 @@ export class Updater {
   private supervised: boolean
   private restartDelayMs: number
 
-  // opts nur für Tests: ein Binary an anderer Stelle, ohne kompiliert oder als Service zu laufen.
+  // opts only for tests: a binary in a different location, without being compiled or running as a service.
   constructor(
     private config: Pick<Config, 'serverUrl'>,
     private jobs: Pick<JobManager, 'runningCount'>,
@@ -100,7 +100,7 @@ export class Updater {
     this.timers = []
   }
 
-  // force: Klick im Panel. Ohne force (Auto-Update) gilt die Wartezeit nach einem Fehlschlag.
+  // force: click in the panel. Without force (Auto-update) the waiting period after a failure applies.
   async run(opts: { force?: boolean } = {}): Promise<UpdateResult> {
     if (!this.compiled) throw new DaemonError('This daemon was not started from an installed binary and cannot update itself.', 'UPDATE_UNSUPPORTED')
     if (this.staged) return this.installed(this.staged)
@@ -155,7 +155,7 @@ export class Updater {
       })
       if (!res.ok || !res.body) throw new Error(`download: HTTP ${res.status}`)
 
-      // Im Strom entpacken und hashen, damit ein kleines Gerät nicht 100 MB im Speicher hält.
+      // Decompress and hash as a stream, so that a small device does not hold 100 MB in memory.
       const hash = createHash('sha256')
       let size = 0
       const meter = new Transform({
@@ -176,7 +176,7 @@ export class Updater {
       if (probe.status !== 0 || reported !== version) {
         throw new Error(`The new binary does not run here or reports ${reported || 'no version'} instead of ${version}.`)
       }
-      // rename ersetzt die Datei atomar; der laufende Prozess behält die alte bis zum Neustart.
+      // rename replaces the file atomically; the running process keeps the old one until the restart.
       renameSync(tmp, this.execPath)
     } catch (err) {
       rmSync(tmp, { force: true })
@@ -184,7 +184,7 @@ export class Updater {
     }
   }
 
-  // Ein Neustart beendet laufende Jobs, deshalb warten, bis keiner mehr läuft.
+  // A restart ends running jobs, so wait until none is running any more.
   private restartWhenIdle(version: string) {
     if (!this.supervised) {
       log.info(`Daemon ${version} is installed at ${this.execPath}. Restart the daemon to use it.`)
@@ -203,7 +203,7 @@ export class Updater {
       this.restart()
       return true
     }
-    // Erst die Antwort an den Server hinauslassen.
+    // Let the reply to the server go out first.
     this.timers.push(
       setTimeout(() => {
         if (tryRestart()) return
@@ -226,11 +226,11 @@ export class Updater {
       mkdirSync(this.stateDir, { recursive: true, mode: 0o700 })
       writeFileSync(this.memoPath, `${JSON.stringify(memo, null, 2)}\n`, { mode: 0o600 })
     } catch {
-      // Ohne Merkzettel versucht Auto-Update es beim nächsten Verbindungsaufbau erneut.
+      // Without the memo, Auto-update tries again the next time it connects.
     }
   }
 
-  // Reste abgebrochener Downloads und ein Merkzettel für eine Version, die inzwischen läuft.
+  // Leftovers of aborted downloads and a memo for a version that is running by now.
   private cleanup() {
     const dir = path.dirname(this.execPath)
     try {
@@ -240,13 +240,13 @@ export class Updater {
         if (Date.now() - statSync(full).mtimeMs > DOWNLOAD_TIMEOUT_MS) rmSync(full, { force: true })
       }
     } catch {
-      // Ordner nicht lesbar: dann scheitert später auch das Update mit einer klaren Meldung.
+      // Directory not readable: then the update will fail later too, with a clear message.
     }
     try {
       const memo = JSON.parse(readFileSync(this.memoPath, 'utf8')) as FailureMemo
       if (compareVersions(memo.version, VERSION) <= 0) rmSync(this.memoPath, { force: true })
     } catch {
-      // Kein Merkzettel.
+      // No memo.
     }
   }
 }

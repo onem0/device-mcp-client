@@ -1,5 +1,5 @@
-// Interaktive Sessions über tmux. Jede Session heißt mcp-…, damit sie nicht mit eigenen tmux-Sessions kollidiert.
-// tmux läuft auf dem normalen Socket: Auf dem Gerät kann man mit `tmux attach -t mcp-…` zuschauen.
+// Interactive sessions via tmux. Every session is named mcp-… so that it does not collide with the user's own tmux sessions.
+// tmux runs on the normal socket: on the device you can watch with `tmux attach -t mcp-…`.
 
 import { spawn } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
@@ -9,14 +9,14 @@ import { DaemonError, type SessionInfo, type SessionScreen, type SessionStartRes
 
 export const SESSION_PREFIX = 'mcp-'
 const NAME_RE = /^[A-Za-z0-9_-]{1,48}$/
-// Sondertasten in tmux-Schreibweise, optional mit Modifikatoren (C-c, M-x, S-Tab …).
+// Special keys in tmux notation, optionally with modifiers (C-c, M-x, S-Tab …).
 const KEY_RE =
   /^(?:[CMS]-)*(?:[A-Za-z0-9]|Enter|Escape|Tab|BTab|BSpace|Space|Up|Down|Left|Right|Home|End|PageUp|PageDown|PPage|NPage|Insert|Delete|IC|DC|F(?:[1-9]|1[0-2]))$/
 const MAX_SCREEN_CHARS = 100_000
 const MAX_SCROLLBACK = 10_000
 const MAX_WAIT_MS = 10_000
 const DEFAULT_WAIT_MS = 500
-// So viel Verlauf liest session_read bei beendeten Befehlen automatisch mit.
+// This much scrollback is read along automatically by session_read for finished commands.
 const DEAD_SCROLLBACK = 1000
 
 interface RunResult {
@@ -28,7 +28,7 @@ interface RunResult {
 const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(min, Math.floor(v)))
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
-// Für Tests: eigener tmux-Socket und kein systemd-run.
+// For tests: a separate tmux socket and no systemd-run.
 const socketArgs = () => (process.env.DEVICE_MCP_TMUX_SOCKET ? ['-L', process.env.DEVICE_MCP_TMUX_SOCKET] : [])
 
 function tmuxEnv() {
@@ -75,7 +75,7 @@ async function tmuxOk(args: string[]) {
 
 const noServer = (stderr: string) => /no server running|error connecting|No such file or directory/i.test(stderr)
 
-// Akzeptiert "build" und "mcp-build", liefert immer "mcp-build".
+// Accepts "build" and "mcp-build", always returns "mcp-build".
 export function sessionName(input: string) {
   if (typeof input !== 'string') throw new DaemonError('No session name given.', 'BAD_REQUEST')
   const raw = input.trim()
@@ -84,7 +84,7 @@ export function sessionName(input: string) {
   return SESSION_PREFIX + rest
 }
 
-// "=name" sucht exakt, ohne Präfix-Treffer auf ähnliche Namen.
+// "=name" matches exactly, without prefix matches on similar names.
 const target = (name: string) => `=${name}:`
 
 async function exists(name: string) {
@@ -98,8 +98,8 @@ async function mustExist(name: string) {
   throw new DaemonError(`No session ${name}. ${names.length ? `Existing: ${names.join(', ')}.` : 'No mcp session is running.'}`, 'NOT_FOUND')
 }
 
-// systemd-run --user --scope legt den tmux-Server in eine eigene Scope-Unit. Sonst gehörte er zur Cgroup des
-// Daemon-Service, und systemd würde ihn (KillMode=control-group) bei jedem Neustart des Daemons mit beenden.
+// systemd-run --user --scope puts the tmux server into its own scope unit. Otherwise it would belong to the cgroup of the
+// daemon service, and systemd (KillMode=control-group) would end it too on every restart of the daemon.
 let scopeAvailable: boolean | null = null
 async function canUseScope() {
   if (process.env.DEVICE_MCP_TMUX_NO_SCOPE === '1' || process.platform !== 'linux') return false
@@ -128,13 +128,13 @@ export async function sessionStart(params: { name?: string; cwd?: string; comman
 
   const cols = clamp(params.cols ?? 200, 20, 500)
   const rows = clamp(params.rows ?? 50, 5, 200)
-  // Ohne command startet tmux die Standard-Shell des Benutzers als Login-Shell.
+  // Without command, tmux starts the user's default shell as a login shell.
   const args = ['new-session', '-d', '-s', name, '-x', String(cols), '-y', String(rows), '-c', cwd]
   if (params.command) {
     if (typeof params.command !== 'string') throw new DaemonError('command must be a string.', 'BAD_REQUEST')
-    // Nach dem Ende des Befehls soll der Bildschirm stehen bleiben, damit die letzte Ausgabe lesbar ist.
-    // remain-on-exit muss gesetzt sein, bevor der Befehl läuft: erst ein wartender Platzhalter (cat),
-    // dann die Option, dann ersetzt respawn-pane den Platzhalter durch den eigentlichen Befehl.
+    // After the command ends the screen should stay, so that the last output remains readable.
+    // remain-on-exit must be set before the command runs: first a waiting placeholder (cat),
+    // then the option, then respawn-pane replaces the placeholder with the actual command.
     args.push('cat', ';', 'set-option', '-t', target(name), 'remain-on-exit', 'on', ';', 'respawn-pane', '-k', '-t', target(name), '-c', cwd, params.command)
   }
 
@@ -144,12 +144,12 @@ export async function sessionStart(params: { name?: string; cwd?: string; comman
     const unit = `device-mcp-tmux-${name.slice(SESSION_PREFIX.length)}-${randomBytes(2).toString('hex')}`
     res = await run('systemd-run', ['--user', '--scope', '--quiet', '--collect', `--unit=${unit}`, 'tmux', ...socketArgs(), ...args]).catch(() => null)
     if (res?.code === 0) detachedFromDaemon = true
-    // Ohne User-Bus (z. B. Daemon von Hand gestartet) ganz normal starten.
+    // Without a user bus (e.g. daemon started by hand), start the normal way.
     else if (res && !(await exists(name))) res = null
   }
   if (!res) res = await tmux(args)
-  // macOS: Der tmux-Server löst sich in eine eigene Sitzung ab, und launchd beendet beim Neustart
-  // des Daemons nur dessen Prozessgruppe. Die Session übersteht ihn also auch ohne systemd-run.
+  // macOS: the tmux server detaches into its own session, and when the daemon restarts launchd
+  // only ends the daemon's process group. So the session survives it even without systemd-run.
   if (process.platform === 'darwin') detachedFromDaemon = true
   if (res.code !== 0 && !(await exists(name))) {
     throw new DaemonError(`tmux could not start the session: ${res.stderr.trim() || `exit ${res.code}`}`, 'TMUX_ERROR')
@@ -168,7 +168,7 @@ export async function sessionSend(params: { session: string; text?: string; keys
   if (!params.text && keys.length === 0) throw new DaemonError('Nothing to send: give text or keys.', 'BAD_REQUEST')
   await mustExist(name)
 
-  // Erst der Text (wörtlich, -l), dann die Sondertasten. So geht "Befehl + Enter" in einem Aufruf.
+  // First the text (literally, -l), then the special keys. That way "command + Enter" works in a single call.
   if (params.text) await tmuxOk(['send-keys', '-t', target(name), '-l', '--', params.text])
   if (keys.length) await tmuxOk(['send-keys', '-t', target(name), ...keys])
 
@@ -182,13 +182,13 @@ export async function sessionRead(params: { session: string; scrollback_lines?: 
   const name = sessionName(params.session)
   await mustExist(name)
   const info = await tmuxOk(['display-message', '-p', '-t', target(name), '#{pane_dead}|#{pane_dead_status}|#{pane_current_command}'])
-  // Trenner |, weil manche tmux-Versionen Tabs in Formaten durch _ ersetzen.
+  // Separator |, because some tmux versions replace tabs in formats with _.
   const [dead, status, ...rest] = info.stdout.trim().split('|')
   const command = rest.join('|')
 
-  // Ist der Befehl beendet, schiebt tmux die letzte Ausgabe in den Verlauf. Dann den Verlauf mitlesen.
+  // Once the command has ended, tmux moves the last output into the scrollback. Then read the scrollback as well.
   const scrollback = clamp(Math.max(params.scrollback_lines ?? 0, dead === '1' ? DEAD_SCROLLBACK : 0), 0, MAX_SCROLLBACK)
-  // -p: auf stdout, -J: umgebrochene Zeilen zusammenfügen. Ohne -e kommen keine Farbcodes mit.
+  // -p: to stdout, -J: join wrapped lines. Without -e no colour codes come along.
   const args = ['capture-pane', '-p', '-J', '-t', target(name)]
   if (scrollback > 0) args.push('-S', `-${scrollback}`)
   const captured = await tmuxOk(args)
@@ -220,7 +220,7 @@ export async function sessionList(): Promise<SessionInfo[]> {
     .split('\n')
     .filter((line) => line.startsWith(SESSION_PREFIX))
     .map((line) => {
-      // Der Befehl steht zuletzt, falls er selbst ein | enthält.
+      // The command comes last, in case it contains a | itself.
       const [name = '', created = '0', dead = '0', status = '', width = '0', height = '0', attached = '0', ...rest] = line.split('|')
       const command = rest.join('|')
       return {

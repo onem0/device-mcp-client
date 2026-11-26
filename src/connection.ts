@@ -18,8 +18,8 @@ export function wsUrl(serverUrl: string) {
   return url.toString()
 }
 
-// Hält die Verbindung zum Server. Jobs laufen unabhängig davon weiter, nach einem Reconnect
-// meldet hello den Stand aller Jobs, damit der Server nachziehen kann.
+// Holds the connection to the server. Jobs keep running independently of it; after a reconnect,
+// hello reports the state of all jobs so the server can catch up.
 export class Connection {
   private ws: WebSocket | null = null
   private ready = false
@@ -97,7 +97,7 @@ export class Connection {
       this.onDisconnect(event.code, event.reason)
     }
     ws.onerror = () => {
-      // Details kommen über onclose.
+      // Details arrive via onclose.
     }
   }
 
@@ -110,7 +110,7 @@ export class Connection {
         this.heartbeatTimeoutMs = msg.heartbeatTimeoutMs
         this.clearTimers()
         this.timers.push(setInterval(() => this.send(ws, { type: 'heartbeat' }), this.heartbeatIntervalMs))
-        // Kommt nichts mehr vom Server (auch kein heartbeat_ack), ist die Leitung tot.
+        // If nothing arrives from the server any more (not even a heartbeat_ack), the line is dead.
         this.timers.push(
           setInterval(() => {
             if (Date.now() - this.lastServerMessage > this.heartbeatTimeoutMs) {
@@ -161,14 +161,14 @@ export class Connection {
     this.scheduleReconnect(delay)
   }
 
-  // Tote Verbindung: nicht auf den Close-Handshake warten, sofort neu aufbauen.
+  // Dead connection: do not wait for the close handshake, reconnect right away.
   private abandon(ws: WebSocket, reason: string) {
     if (this.ws !== ws) return
     this.ws = null
     try {
       ws.close(4000, reason)
     } catch {
-      // egal
+      // does not matter
     }
     this.onDisconnect(1006, reason)
   }
@@ -177,7 +177,7 @@ export class Connection {
     if (this.stopped || this.reconnectTimer) return
     const backoff = Math.min(BACKOFF_MAX_MS, BACKOFF_MIN_MS * 2 ** this.attempt)
     this.attempt = Math.min(this.attempt + 1, 16)
-    // ±20 % Streuung, damit nach einem Server-Neustart nicht alle Geräte gleichzeitig anklopfen.
+    // ±20 % jitter so that not all devices knock at the same moment after a server restart.
     const delay = Math.round((fixedDelay ?? backoff) * (0.8 + Math.random() * 0.4))
     log.info(`Reconnecting in ${(delay / 1000).toFixed(1)} s`)
     this.reconnectTimer = setTimeout(() => this.connect(), delay)

@@ -1,5 +1,5 @@
-// journald versieht die Zeilen selbst mit Zeitstempel (systemd setzt dann JOURNAL_STREAM).
-// Im Terminal und in der Logdatei unter macOS (launchd) schreibt der Daemon ihn dazu.
+// journald adds the timestamp to the lines itself (systemd then sets JOURNAL_STREAM).
+// In the terminal and in the log file on macOS (launchd) the daemon adds it.
 const stamp = () => (process.env.JOURNAL_STREAM ? '' : `${new Date().toISOString()} `)
 
 export const log = {

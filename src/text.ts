@@ -1,19 +1,19 @@
-// Aufbereitung von Text für Claude: lange Zeilen kürzen, Steuerzeichen aus Befehlsausgaben entfernen.
+// Preparing text for Claude: truncate long lines, remove control characters from command output.
 
 export const MAX_LINE_CHARS = 2000
 
-// CSI- und OSC-Sequenzen sowie einzelne ESC-Codes (Farben, Cursor, Titel).
+// CSI and OSC sequences as well as single ESC codes (colours, cursor, title).
 const ANSI = /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]/g
 const CONTROL = /[\x00-\x08\x0b-\x1f\x7f]/g
 
-// Befehlsausgabe: Fortschrittsbalken mit \r auf den letzten Stand reduzieren, Farben und Steuerzeichen raus.
+// Command output: reduce progress bars using \r to their last state, strip colours and control characters.
 export function cleanOutputLine(line: string) {
   let s = line.endsWith('\r') ? line.slice(0, -1) : line
   if (s.includes('\r')) s = s.split('\r').findLast((part) => part.length > 0) ?? ''
   return s.replace(ANSI, '').replace(CONTROL, '')
 }
 
-// Dateiinhalt bleibt unverändert bis auf das Zeilenende \r.
+// File content stays unchanged except for the line ending \r.
 export const cleanFileLine = (line: string) => (line.endsWith('\r') ? line.slice(0, -1) : line)
 
 export function capLine(line: string, extraBytes = 0) {
@@ -23,7 +23,7 @@ export function capLine(line: string, extraBytes = 0) {
   return { text: `${line.slice(0, MAX_LINE_CHARS)} … [+${more}]`, cut: true }
 }
 
-// Nimmt Zeilen von vorn, bis das Zeichenbudget erschöpft ist. Mindestens eine Zeile, damit es weitergeht.
+// Takes lines from the front until the character budget is used up. At least one line, so that progress is made.
 export function takeLines(lines: string[], budget: number) {
   const out: string[] = []
   let used = 0
@@ -35,7 +35,7 @@ export function takeLines(lines: string[], budget: number) {
   return out
 }
 
-// Wie takeLines, aber von hinten.
+// Like takeLines, but from the end.
 export function takeLinesFromEnd(lines: string[], budget: number) {
   const out: string[] = []
   let used = 0

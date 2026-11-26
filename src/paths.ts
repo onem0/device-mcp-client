@@ -9,7 +9,7 @@ export const configPath = () =>
 export const stateDir = () =>
   process.env.DEVICE_MCP_STATE_DIR || path.join(process.env.XDG_STATE_HOME || path.join(home(), '.local', 'state'), 'device-mcp')
 
-// Pfade von Claude: absolut, mit ~ oder relativ zum Home des Benutzers.
+// Paths from Claude: absolute, with ~, or relative to the user's home directory.
 export function resolveUserPath(input: string) {
   const p = input.trim()
   if (p === '~') return home()

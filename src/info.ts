@@ -16,7 +16,7 @@ function detectOs() {
       const version = spawnSync('sw_vers', ['-productVersion'], { encoding: 'utf8', timeout: 5_000 }).stdout?.trim()
       if (version) return `macOS ${version}`
     } catch {
-      // Ohne sw_vers bleibt es bei "Darwin".
+      // Without sw_vers it stays "Darwin".
     }
     return 'macOS'
   }
@@ -24,7 +24,7 @@ function detectOs() {
     const match = /^PRETTY_NAME="?([^"\n]*)"?$/m.exec(readFileSync('/etc/os-release', 'utf8'))
     if (match?.[1]) return match[1]
   } catch {
-    // Kein /etc/os-release.
+    // No /etc/os-release.
   }
   return os.type()
 }

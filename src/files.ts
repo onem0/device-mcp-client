@@ -7,17 +7,17 @@ import { resolveUserPath } from './paths.ts'
 import { DaemonError, type EditFileResult, type ReadFileResult, type WriteFileResult } from './protocol.ts'
 import { capLine, cleanFileLine, takeLines } from './text.ts'
 
-// Claude akzeptiert Bilder bis 5 MB als base64, das sind 3,75 MB Rohdaten.
+// Claude accepts images up to 5 MB as base64, which is 3.75 MB of raw data.
 export const IMAGE_MAX_BYTES = 3.75 * 1024 * 1024
 const WRITE_MAX_BYTES = 16 * 1024 * 1024
-// Bis zu dieser Größe wird eine Textdatei ganz gelesen (dann ist die Zeilenzahl bekannt), darüber gestreamt.
+// Up to this size a text file is read in full (so the line count is known); above it, it is streamed.
 const FULL_READ_MAX_BYTES = 16 * 1024 * 1024
 const MAX_TEXT_CHARS = 100_000
 const SNIFF_BYTES = 8192
-// read_file mit encoding=base64: so viele Bytes pro Aufruf (Standard und Obergrenze).
+// read_file with encoding=base64: this many bytes per call (default and upper limit).
 export const BASE64_DEFAULT_BYTES = 256 * 1024
 export const BASE64_MAX_BYTES = 1024 * 1024
-// edit_file liest die Datei ganz in den Speicher.
+// edit_file reads the whole file into memory.
 const EDIT_MAX_BYTES = 16 * 1024 * 1024
 const SNIPPET_CONTEXT = 3
 const SNIPPET_MAX = 3
@@ -67,7 +67,7 @@ export async function readFileForClaude(params: {
   if (info.isDirectory()) throw new DaemonError(`${file} is a directory. List it e.g. with run_command "ls -la ${file}".`, 'BAD_REQUEST')
   if (!info.isFile()) throw new DaemonError(`${file} is not a regular file.`, 'BAD_REQUEST')
 
-  // Rohdaten als base64, in Stücken: für Binärdateien jeder Art.
+  // Raw data as base64, in chunks: for binary files of any kind.
   if (params.encoding === 'base64') {
     const start = Math.max(0, Math.floor(params.byteOffset ?? 0))
     const want = Math.min(BASE64_MAX_BYTES, Math.max(1, Math.floor(params.byteLength ?? BASE64_DEFAULT_BYTES)))
@@ -136,7 +136,7 @@ export async function readFileForClaude(params: {
     }
   }
 
-  // Große Datei: bis zum gewünschten Bereich streamen, Gesamtzahl der Zeilen bleibt offen.
+  // Large file: stream up to the requested range; the total number of lines stays unknown.
   const stream = createReadStream(file, { encoding: 'utf8' })
   const rl = createInterface({ input: stream, crlfDelay: Infinity })
   const lines: string[] = []
@@ -201,8 +201,8 @@ const countOccurrences = (text: string, needle: string) => {
   return n
 }
 
-// Schreibt über eine Temp-Datei im selben Ordner und rename: Wer die Datei liest, sieht nie einen halben Stand.
-// Rechte (und, wenn erlaubt, Besitzer) der alten Datei bleiben. Ist der Ordner nicht beschreibbar, wird in place geschrieben.
+// Writes via a temp file in the same directory and rename: anyone reading the file never sees a half-written state.
+// Permissions (and, if allowed, the owner) of the old file are kept. If the directory is not writable, it writes in place.
 async function writeAtomic(file: string, data: string, mode: number, uid: number, gid: number) {
   const tmp = path.join(path.dirname(file), `.${path.basename(file)}.device-mcp-${randomBytes(4).toString('hex')}.tmp`)
   try {
@@ -230,7 +230,7 @@ export async function editFileForClaude(params: { path: string; old_string: stri
   if (typeof params.new_string !== 'string') throw new DaemonError('new_string is missing.', 'BAD_REQUEST')
   if (params.old_string === params.new_string) throw new DaemonError('old_string and new_string are identical, nothing to change.', 'BAD_REQUEST')
 
-  // Symlinks auflösen: geändert wird die Zieldatei, der Link bleibt ein Link.
+  // Resolve symlinks: the target file is changed, the link stays a link.
   const file = await realpath(resolveUserPath(params.path)).catch((err) => fsError(err, resolveUserPath(params.path)))
   const info = await stat(file).catch((err) => fsError(err, file))
   if (!info.isFile()) throw new DaemonError(`${file} is not a regular file.`, 'BAD_REQUEST')
@@ -240,7 +240,7 @@ export async function editFileForClaude(params: { path: string; old_string: stri
   if (buf.includes(0)) throw new DaemonError(`${file} is a binary file, edit_file only changes text.`, 'BAD_REQUEST')
   const text = buf.toString('utf8')
 
-  // Zeilenenden erhalten: Hat die Datei durchgehend CRLF, werden \n in old_string und new_string angeglichen.
+  // Preserve line endings: if the file uses CRLF throughout, \n in old_string and new_string is adjusted to match.
   const crlf = text.includes('\r\n') && !/(^|[^\r])\n/.test(text)
   let oldS = params.old_string
   let newS = params.new_string
@@ -260,7 +260,7 @@ export async function editFileForClaude(params: { path: string; old_string: stri
     throw new DaemonError(`old_string occurs ${count} times in ${file}. Include more surrounding text to make it unique, or set replace_all=true.`, 'AMBIGUOUS')
   }
 
-  // Neuen Text bauen und merken, wo die Ersetzungen landen.
+  // Build the new text and remember where the replacements end up.
   const positions: number[] = []
   let out = ''
   let last = 0
@@ -274,7 +274,7 @@ export async function editFileForClaude(params: { path: string; old_string: stri
 
   const { inPlace } = await writeAtomic(file, out, info.mode, info.uid, info.gid)
 
-  // Kontext: ein paar Zeilen um die ersten Änderungen, mit Zeilennummern.
+  // Context: a few lines around the first changes, with line numbers.
   const lines = out.split('\n').map((l) => cleanFileLine(l))
   const newLineCount = newS.split('\n').length
   const snippets: EditFileResult['snippets'] = []

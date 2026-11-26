@@ -42,7 +42,7 @@ describe.skipIf(!hasTmux)('tmux sessions', () => {
   test('start without a name assigns mcp-…', async () => {
     const res = await sessionStart({ command: SHELL })
     expect(res.name).toMatch(/^mcp-[0-9a-f]{6}$/)
-    // Ohne systemd-run (im Test abgeschaltet) nur unter macOS: Dort übersteht tmux den Neustart des Daemons von selbst.
+    // Without systemd-run (disabled in the test) only on macOS: there tmux survives the daemon restart on its own.
     expect(res.detachedFromDaemon).toBe(process.platform === 'darwin')
     await sessionKill({ session: res.name })
   })

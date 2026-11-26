@@ -7,18 +7,18 @@ import { home, resolveUserPath } from './paths.ts'
 import { DaemonError, type JobStatus, type JobSummary, type OutputChunk } from './protocol.ts'
 import { capLine, cleanOutputLine, MAX_LINE_CHARS, takeLines, takeLinesFromEnd } from './text.ts'
 
-// Ab hier wird die Ausgabe eines Jobs verworfen (die Pipes werden weiter geleert).
+// From this point on a job's output is discarded (the pipes are still drained).
 const MAX_LOG_BYTES = 64 * 1024 * 1024
 const KILL_GRACE_MS = 5_000
-// Nach dem Ende von bash so lange auf geschlossene Pipes warten. Hintergrundprozesse (cmd &) halten sie sonst offen.
+// After bash exits, wait this long for the pipes to close. Background processes (cmd &) otherwise keep them open.
 const CLOSE_GRACE_MS = 2_000
 const KEEP_JOBS = 300
 const KEEP_DAYS = 14
 const INDEX_IDLE_MS = 10 * 60_000
-// Zeichenbudget pro Antwort, grob 25k Tokens.
+// Character budget per reply, roughly 25k tokens.
 const MAX_OUTPUT_CHARS = 100_000
 const HEADTAIL_PART_CHARS = 40_000
-// Pro Zeile höchstens so viele Bytes lesen, der Rest wird nur gezählt.
+// Read at most this many bytes per line; the rest is only counted.
 const MAX_LINE_BYTES = MAX_LINE_CHARS * 4
 
 interface JobMeta {
@@ -37,7 +37,7 @@ interface JobMeta {
   outputTruncated: boolean
 }
 
-// Byte-Offsets der Zeilenanfänge im Log. Damit lassen sich Zeilenbereiche lesen, ohne die Datei zu zerlegen.
+// Byte offsets of the line starts in the log. They allow reading line ranges without splitting up the file.
 class LineIndex {
   starts: number[] = [0]
   size = 0
@@ -52,7 +52,7 @@ class LineIndex {
     return this.starts[this.starts.length - 1] === this.size ? this.starts.length - 1 : this.starts.length
   }
 
-  // Bytebereich von Zeile i, ohne das abschließende \n.
+  // Byte range of line i, without the trailing \n.
   line(i: number): [number, number] {
     const start = this.starts[i]!
     const next = i + 1 < this.starts.length ? this.starts[i + 1]! : this.size
@@ -95,7 +95,7 @@ export type OutputParams =
   | { jobId: string; mode: 'tail'; lines: number }
   | { jobId: string; mode: 'headtail'; head: number; tail: number }
 
-// Umgebung für Befehle: wie der Daemon, aber ohne Pager und ohne interaktive Abfragen.
+// Environment for commands: like the daemon's, but without a pager and without interactive prompts.
 function commandEnv() {
   const env: Record<string, string> = {}
   for (const [key, value] of Object.entries(process.env)) {
@@ -121,7 +121,7 @@ export class JobManager extends EventEmitter<{ exit: [JobSummary] }> {
       try {
         const meta = JSON.parse(readFileSync(path.join(this.dir, file), 'utf8')) as JobMeta
         const job = new Job(meta, path.join(this.dir, `${meta.id}.log`))
-        // Ein Job, der beim letzten Lauf noch lief, ist mit dem Daemon beendet worden.
+        // A job that was still running during the last run was ended along with the daemon.
         if (meta.status === 'running') {
           meta.status = 'lost'
           meta.error = 'The daemon restarted while the job was running.'
@@ -183,7 +183,7 @@ export class JobManager extends EventEmitter<{ exit: [JobSummary] }> {
     this.jobs.set(jobId, job)
     this.save(job)
 
-    // detached: eigene Prozessgruppe, damit kill_job und Timeout auch Kindprozesse erreichen.
+    // detached: its own process group, so that kill_job and the timeout also reach child processes.
     const child = spawn('bash', ['-c', command], { cwd, env: commandEnv(), detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
     job.proc = child
     job.pid = child.pid ?? null
@@ -198,7 +198,7 @@ export class JobManager extends EventEmitter<{ exit: [JobSummary] }> {
       this.closeLog(job)
     })
     child.on('exit', (code, signal) => {
-      // Auf die Pipes warten, aber nicht ewig: "server &" hält sie sonst offen.
+      // Wait for the pipes, but not forever: "server &" otherwise keeps them open.
       job.closeTimer = setTimeout(() => this.finish(job, code, signal), CLOSE_GRACE_MS)
     })
     child.on('close', (code, signal) => {
@@ -210,7 +210,7 @@ export class JobManager extends EventEmitter<{ exit: [JobSummary] }> {
       job.timeoutTimer = setTimeout(() => {
         job.timedOut = true
         this.signal(job, 'SIGTERM')
-        // Auch nach dem Ende von bash, solange Kindprozesse die Pipes noch offen halten.
+        // Also after bash has exited, as long as child processes still hold the pipes open.
         job.killTimer = setTimeout(() => {
           if (job.running || job.writeFd !== null) this.signal(job, 'SIGKILL')
         }, KILL_GRACE_MS)
@@ -233,7 +233,7 @@ export class JobManager extends EventEmitter<{ exit: [JobSummary] }> {
       .map((job) => this.summary(job))
   }
 
-  // Wartet kurz auf das Ende, damit der Aufrufer gleich den Endstand sieht.
+  // Waits briefly for the job to end so that the caller sees the final state right away.
   async kill(jobId: string, signal: NodeJS.Signals = 'SIGTERM') {
     const job = this.get(jobId)
     if (!job.running) throw new DaemonError(`Job ${jobId} is no longer running (${job.meta.status}).`, 'NOT_RUNNING')
@@ -271,7 +271,7 @@ export class JobManager extends EventEmitter<{ exit: [JobSummary] }> {
     return n
   }
 
-  // Beim Beenden des Daemons: laufende Jobs nicht als Waisen zurücklassen.
+  // When the daemon exits: do not leave running jobs behind as orphans.
   killAll() {
     for (const job of this.jobs.values()) {
       if (!job.running) continue
@@ -305,7 +305,7 @@ export class JobManager extends EventEmitter<{ exit: [JobSummary] }> {
         return { ...base, text: taken.join('\n'), fromLine: total - taken.length, toLine: total, truncatedChars: lines.cut || taken.length < lines.lines.length }
       }
 
-      // headtail: Anfang und Ende, die Mitte nur als Zahl. Für run_command im Vordergrund.
+      // headtail: start and end, the middle only as a count. For run_command in the foreground.
       const headEnd = Math.min(total, Math.max(0, params.head | 0))
       const tailStart = Math.max(headEnd, total - Math.max(0, params.tail | 0))
       const headRead = read(0, headEnd)
@@ -381,7 +381,7 @@ export class JobManager extends EventEmitter<{ exit: [JobSummary] }> {
     try {
       closeSync(job.writeFd)
     } catch {
-      // schon zu
+      // already closed
     }
     job.writeFd = null
   }
@@ -394,7 +394,7 @@ export class JobManager extends EventEmitter<{ exit: [JobSummary] }> {
       try {
         process.kill(job.pid, signal)
       } catch {
-        // Prozess ist schon weg.
+        // Process is already gone.
       }
     }
   }
@@ -402,7 +402,7 @@ export class JobManager extends EventEmitter<{ exit: [JobSummary] }> {
   private finish(job: Job, code: number | null, signal: NodeJS.Signals | null, forced?: JobStatus) {
     if (!job.running) return
     for (const timer of [job.timeoutTimer, job.closeTimer]) if (timer) clearTimeout(timer)
-    // killTimer bleibt bewusst stehen: Bei einem Timeout sollen auch hängende Kindprozesse noch SIGKILL bekommen.
+    // killTimer is deliberately left running: on a timeout, hanging child processes should still get SIGKILL.
     const meta = job.meta
     meta.status = forced ?? (job.timedOut ? 'timeout' : job.killRequested || signal ? 'killed' : 'exited')
     meta.exitCode = code
@@ -446,7 +446,7 @@ export class JobManager extends EventEmitter<{ exit: [JobSummary] }> {
     renameSync(tmp, file)
   }
 
-  // Alte Jobs löschen, Zeilenindizes lange nicht gelesener Jobs aus dem Speicher werfen.
+  // Delete old jobs, drop the line indexes of jobs not read for a long time from memory.
   private prune() {
     const cutoff = Date.now() - KEEP_DAYS * 86_400_000
     const finished = this.sorted().filter((job) => !job.running)

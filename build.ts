@@ -1,33 +1,33 @@
-// Baut den Daemon als Single-Binary für Linux und macOS, ohne Runtime auf dem Gerät.
-// Aufruf: bun run build.ts [linux-x64|linux-arm64|darwin-x64|darwin-arm64|linux|darwin|x64|arm64]   (ohne Argument alle)
-// Neben den Binaries entsteht dist/manifest.json: Version und Prüfsummen. Der Server liefert es aus,
-// die Daemons erkennen daran ein Update.
+// Builds the daemon as a single binary for Linux and macOS, with no runtime on the device.
+// Usage: bun run build.ts [linux-x64|linux-arm64|darwin-x64|darwin-arm64|linux|darwin|x64|arm64]   (all of them without an argument)
+// Alongside the binaries it writes dist/manifest.json: version and checksums. The server serves it,
+// and the daemons use it to detect an update.
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { VERSION } from './src/version.ts'
 
 const TARGETS = {
-  // baseline läuft auch auf älteren x64-CPUs ohne AVX2 (und unter Rosetta).
+  // baseline also runs on older x64 CPUs without AVX2 (and under Rosetta).
   'linux-x64': 'bun-linux-x64-baseline',
   'linux-arm64': 'bun-linux-arm64',
   'darwin-x64': 'bun-darwin-x64-baseline',
-  // Bun signiert macOS-Binaries beim Bauen ad hoc, auch beim Cross-Compile unter Linux.
+  // Bun ad-hoc signs macOS binaries at build time, even when cross-compiling on Linux.
   'darwin-arm64': 'bun-darwin-arm64',
 } as const
 
 type Key = keyof typeof TARGETS
 interface Manifest {
   version: string
-  // sha256 und size gelten für das entpackte Binary.
+  // sha256 and size refer to the uncompressed binary.
   binaries: Partial<Record<Key, { sha256: string; size: number }>>
 }
 
 const filter = process.argv[2]
 const wanted = (Object.keys(TARGETS) as Key[]).filter((key) => !filter || key === filter || key.split('-').includes(filter))
-if (!wanted.length) throw new Error(`Unbekanntes Ziel ${filter}. Möglich: ${Object.keys(TARGETS).join(', ')}`)
+if (!wanted.length) throw new Error(`Unknown target ${filter}. Available: ${Object.keys(TARGETS).join(', ')}`)
 mkdirSync('dist', { recursive: true })
 
-// Ein Teil-Build ergänzt das Manifest derselben Version, eine neue Version beginnt leer.
+// A partial build adds to the manifest of the same version; a new version starts empty.
 const MANIFEST = 'dist/manifest.json'
 let manifest: Manifest = { version: VERSION, binaries: {} }
 if (existsSync(MANIFEST)) {
@@ -35,7 +35,7 @@ if (existsSync(MANIFEST)) {
     const old = JSON.parse(readFileSync(MANIFEST, 'utf8')) as Manifest
     if (old.version === VERSION && old.binaries) manifest = old
   } catch {
-    // Kaputtes Manifest: neu schreiben.
+    // Broken manifest: rewrite it.
   }
 }
 
@@ -43,7 +43,7 @@ for (const key of wanted) {
   const outfile = `dist/device-mcp-${key}`
   const result = await Bun.build({
     entrypoints: ['src/index.ts'],
-    // Keine .env oder bunfig.toml aus dem Arbeitsverzeichnis (beim Daemon das Home) laden.
+    // Do not load .env or bunfig.toml from the working directory (for the daemon, the home directory).
     compile: { target: TARGETS[key], outfile, autoloadDotenv: false, autoloadBunfig: false },
     minify: true,
   })
