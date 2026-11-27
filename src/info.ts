@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import os from 'node:os'
+import { cachedClaudeVersion } from './claude.ts'
 import type { DaemonInfo } from './protocol.ts'
 import { VERSION } from './version.ts'
 
@@ -37,4 +38,5 @@ export const daemonInfo = (): DaemonInfo => ({
   username: os.userInfo().username,
   homeDir: os.homedir(),
   version: VERSION,
+  claudeCode: cachedClaudeVersion(),
 })

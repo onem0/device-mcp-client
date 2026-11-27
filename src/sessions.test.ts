@@ -1,11 +1,16 @@
 import { afterAll, describe, expect, test } from 'bun:test'
 import { spawnSync } from 'node:child_process'
-import { DaemonError } from './protocol.ts'
+import { mkdtempSync, rmSync } from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { DaemonError, type SessionScreen } from './protocol.ts'
 
-// Own tmux socket so the tests never touch real sessions; no systemd-run.
+// Own tmux socket so the tests never touch real sessions; no systemd-run. Own state dir for pipe-pane files.
 process.env.DEVICE_MCP_TMUX_SOCKET = `device-mcp-test-${process.pid}`
 process.env.DEVICE_MCP_TMUX_NO_SCOPE = '1'
-const { sessionKill, sessionList, sessionName, sessionRead, sessionSend, sessionStart } = await import('./sessions.ts')
+const stateDir = mkdtempSync(path.join(os.tmpdir(), 'dmcp-sessions-'))
+process.env.DEVICE_MCP_STATE_DIR = stateDir
+const { sessionKill, sessionList, sessionName, sessionRead, sessionSend, sessionStart, sessionWait } = await import('./sessions.ts')
 
 const hasTmux = spawnSync('tmux', ['-V']).status === 0
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -14,7 +19,14 @@ const SHELL = "env PS1='$ ' bash --norc --noprofile -i"
 
 afterAll(() => {
   if (hasTmux) spawnSync('tmux', ['-L', process.env.DEVICE_MCP_TMUX_SOCKET!, 'kill-server'])
+  rmSync(stateDir, { recursive: true, force: true })
 })
+
+const tmuxRaw = (...args: string[]) => spawnSync('tmux', ['-L', process.env.DEVICE_MCP_TMUX_SOCKET!, ...args])
+const screenOf = (res: SessionScreen | { name: string; screen: null }) => {
+  if (!('text' in res)) throw new Error('expected a screen')
+  return res
+}
 
 async function expectError(promise: Promise<unknown>, code: string) {
   try {
@@ -110,5 +122,87 @@ describe.skipIf(!hasTmux)('tmux sessions', () => {
     const names = (await sessionList()).map((s) => s.name)
     expect(names).not.toContain('mcp-shell')
     await expectError(sessionRead({ session: 'shell' }), 'NOT_FOUND')
+  })
+})
+
+describe.skipIf(!hasTmux)('waiting, own sessions and more input', () => {
+  test('until_shell returns once the typed command is done', async () => {
+    await sessionStart({ name: 'w', command: SHELL, cols: 120, rows: 30 })
+    await sleep(300)
+    await sessionSend({ session: 'w', text: 'sleep 1.2; echo waited-$((1+1))', keys: ['Enter'], wait_ms: 0 })
+    const res = await sessionWait({ session: 'w', until_shell: true, timeout_ms: 10_000 })
+    expect(res.wait?.reason).toBe('shell')
+    expect(res.text).toContain('waited-2')
+    expect(res.wait!.waitedMs).toBeGreaterThanOrEqual(900)
+  })
+
+  test('pattern on screen, quiet, timeout', async () => {
+    await sessionSend({ session: 'w', text: 'sleep 0.6; echo ready-$((3*3))', keys: ['Enter'], wait_ms: 0 })
+    const matched = await sessionWait({ session: 'w', pattern: 'ready-9', timeout_ms: 5000 })
+    expect(matched.wait?.reason).toBe('pattern')
+    expect(matched.wait?.match).toBe('ready-9')
+    const quiet = await sessionWait({ session: 'w', quiet_ms: 300, timeout_ms: 5000 })
+    expect(quiet.wait?.reason).toBe('quiet')
+    const timeout = await sessionWait({ session: 'w', pattern: 'never-there', timeout_ms: 500 })
+    expect(timeout.wait?.reason).toBe('timeout')
+    await expectError(sessionWait({ session: 'w', pattern: '(' }), 'BAD_REQUEST')
+  })
+
+  test('wait_for only sees output that comes after the input', async () => {
+    await sessionSend({ session: 'w', text: "printf '%s\\n' \"$((6*7))-done\"", keys: ['Enter'], wait_ms: 400 })
+    expect((await sessionRead({ session: 'w' })).text).toContain('42-done')
+    // "42-done" is already on screen; wait_for must wait for the new one.
+    const res = screenOf(await sessionSend({ session: 'w', text: "sleep 1; printf '%s\\n' \"$((6*7))-done\"", keys: ['Enter'], wait_for: '42-done', timeout_ms: 8000 }))
+    expect(res.wait?.reason).toBe('pattern')
+    expect(res.wait?.outputMatched).toBe(true)
+    expect(res.wait!.waitedMs).toBeGreaterThanOrEqual(900)
+    // The tap is closed again afterwards.
+    expect(tmuxRaw('display-message', '-p', '-t', '=mcp-w:', '#{pane_pipe}').stdout.toString().trim()).toBe('0')
+  })
+
+  test('cursor, highlight and the alternate screen', async () => {
+    await sessionSend({ session: 'w', text: 'clear', keys: ['Enter'], wait_ms: 300 })
+    const res = screenOf(await sessionSend({ session: 'w', text: "printf 'a \\033[7mSEL\\033[27m b\\n'", keys: ['Enter'], wait_ms: 400, highlight: true }))
+    expect(res.text).toMatch(/^a ⟦SEL⟧ b$/m)
+    expect(res.cursor!.row).toBeGreaterThanOrEqual(2)
+    expect(res.alternateScreen).toBe(false)
+
+    await sessionStart({ name: 'alt', command: 'less /etc/hosts' })
+    await sleep(500)
+    expect((await sessionRead({ session: 'alt' })).alternateScreen).toBe(true)
+    await sessionKill({ session: 'alt' })
+  })
+
+  test('paste and long text arrive complete', async () => {
+    await sessionStart({ name: 'cat', command: 'cat', cols: 200, rows: 40 })
+    await sleep(300)
+    const pasted = screenOf(await sessionSend({ session: 'cat', text: 'first-line\nsecond-line\n', paste: true, wait_ms: 300 }))
+    expect(pasted.text).toContain('second-line')
+    await sessionKill({ session: 'cat' })
+    // More than tmux takes in one command (16 KB). A shell, because a tty line for cat holds at most 1024 bytes on macOS.
+    const long = 'x'.repeat(20_000)
+    await sessionSend({ session: 'w', text: 'clear', keys: ['Enter'], wait_ms: 300 })
+    // Count what the shell received; the screen cannot show a line longer than itself completely.
+    await sessionSend({ session: 'w', text: `printf %s ${long} | wc -c | sed 's/^ *//;s/$/-bytes/'`, keys: ['Enter'], wait_ms: 0 })
+    const counted = await sessionWait({ session: 'w', pattern: '^\\d+-bytes$', timeout_ms: 10_000 })
+    expect(counted.wait?.match).toBe('20000-bytes')
+  })
+
+  test("the user's own sessions can be read and typed into, but not killed", async () => {
+    tmuxRaw('new-session', '-d', '-s', 'work', '-x', '100', '-y', '20', "env PS1='$ ' bash --norc --noprofile -i")
+    await sleep(300)
+    const all = await sessionList({ all: true })
+    expect(all.find((s) => s.name === 'work')?.own).toBe(true)
+    expect(all.find((s) => s.name === 'mcp-w')?.own).toBe(false)
+    expect((await sessionList()).map((s) => s.name)).not.toContain('work')
+
+    const res = screenOf(await sessionSend({ session: 'work', text: 'echo own-$((2+3))', keys: ['Enter'], wait_ms: 500 }))
+    expect(res.own).toBe(true)
+    expect(res.text).toContain('own-5')
+    expect((await sessionRead({ session: 'work:0' })).text).toContain('own-5')
+    const message = await expectError(sessionKill({ session: 'work' }), 'NOT_FOUND')
+    expect(message).toContain("user's own")
+    await expectError(sessionRead({ session: 'work:9' }), 'TMUX_ERROR')
+    await sessionKill({ session: 'w' })
   })
 })

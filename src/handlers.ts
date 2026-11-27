@@ -1,7 +1,8 @@
+import { claudeEvents, claudeInfo, claudeStart } from './claude.ts'
 import { editFileForClaude, readFileForClaude, writeFileForClaude } from './files.ts'
 import type { JobManager, OutputParams } from './jobs.ts'
 import { DaemonError } from './protocol.ts'
-import { sessionKill, sessionList, sessionRead, sessionSend, sessionStart } from './sessions.ts'
+import { sessionKill, sessionList, sessionRead, sessionSend, sessionStart, sessionWait } from './sessions.ts'
 import type { Updater } from './update.ts'
 
 // Requests from the server. The server is trusted; the parameters are still roughly checked.
@@ -32,10 +33,18 @@ export function createHandlers(jobs: JobManager, updater: Updater) {
         return sessionSend(params)
       case 'session_read':
         return sessionRead(params)
+      case 'session_wait':
+        return sessionWait(params)
       case 'session_list':
-        return sessionList()
+        return sessionList({ all: params.all === true })
       case 'session_kill':
         return sessionKill(params)
+      case 'claude_start':
+        return claudeStart(jobs, params)
+      case 'claude_events':
+        return claudeEvents(jobs, params)
+      case 'claude_info':
+        return claudeInfo()
       case 'update':
         return updater.run({ force: params.force === true, releaseUrl: typeof params.releaseUrl === 'string' ? params.releaseUrl : undefined })
       default:

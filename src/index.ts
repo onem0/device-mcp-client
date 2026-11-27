@@ -1,9 +1,11 @@
+import { detectClaude } from './claude.ts'
 import { loadConfig } from './config.ts'
 import { Connection } from './connection.ts'
 import { createHandlers } from './handlers.ts'
 import { JobManager } from './jobs.ts'
 import { log } from './log.ts'
 import { configPath, stateDir } from './paths.ts'
+import { cleanupSessionFiles } from './sessions.ts'
 import { Updater } from './update.ts'
 import { VERSION } from './version.ts'
 
@@ -57,6 +59,10 @@ const updater = new Updater(jobs, stateDir(), () => shutdown('Daemon stopping fo
 const connection = new Connection(config, jobs, createHandlers(jobs, updater))
 
 log.info(`device-mcp ${VERSION} starting, server ${config.serverUrl}`)
+cleanupSessionFiles()
+// hello reports whether Claude Code is installed. A slow or missing CLI must not hold up the connection for long.
+const claude = await Promise.race([detectClaude(), new Promise<null>((resolve) => setTimeout(() => resolve(null), 20_000))])
+if (claude) log.info(claude.path ? `Claude Code ${claude.version ?? '(version unknown)'} at ${claude.path}` : 'Claude Code not found')
 connection.start()
 
 for (const signal of ['SIGTERM', 'SIGINT'] as const) process.on(signal, () => shutdown('Daemon stopping'))

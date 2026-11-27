@@ -90,6 +90,13 @@ export interface ExecParams {
   timeoutMs?: number | null
 }
 
+// Extras for jobs the daemon starts itself (Claude Code): input on stdin, additional environment, the command as shown.
+export interface StartOptions {
+  stdin?: string
+  env?: Record<string, string | undefined>
+  label?: string
+}
+
 export type OutputParams =
   | { jobId: string; mode: 'range'; offset: number; limit: number }
   | { jobId: string; mode: 'tail'; lines: number }
@@ -144,7 +151,7 @@ export class JobManager extends EventEmitter<{ exit: [JobSummary] }> {
       .map((job) => this.summary(job))
   }
 
-  start(params: ExecParams): JobSummary {
+  start(params: ExecParams, opts: StartOptions = {}): JobSummary {
     const { jobId, command } = params
     if (typeof jobId !== 'string' || !/^[a-z0-9]{4,64}$/.test(jobId)) throw new DaemonError('Invalid job ID.', 'BAD_REQUEST')
     if (typeof command !== 'string' || !command) throw new DaemonError('No command given.', 'BAD_REQUEST')
@@ -163,7 +170,7 @@ export class JobManager extends EventEmitter<{ exit: [JobSummary] }> {
     const job = new Job(
       {
         id: jobId,
-        command,
+        command: opts.label ?? command,
         cwd,
         status: 'running',
         exitCode: null,
@@ -184,9 +191,20 @@ export class JobManager extends EventEmitter<{ exit: [JobSummary] }> {
     this.save(job)
 
     // detached: its own process group, so that kill_job and the timeout also reach child processes.
-    const child = spawn('bash', ['-c', command], { cwd, env: commandEnv(), detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
+    const env: Record<string, string> = commandEnv()
+    for (const [key, value] of Object.entries(opts.env ?? {})) {
+      if (value === undefined) delete env[key]
+      else env[key] = value
+    }
+    const withInput = opts.stdin !== undefined
+    const child = spawn('bash', ['-c', command], { cwd, env, detached: true, stdio: [withInput ? 'pipe' : 'ignore', 'pipe', 'pipe'] })
     job.proc = child
     job.pid = child.pid ?? null
+    if (withInput && child.stdin) {
+      // A command that never reads its input must not crash the daemon with EPIPE.
+      child.stdin.on('error', () => {})
+      child.stdin.end(opts.stdin)
+    }
 
     const onData = (chunk: Buffer) => this.append(job, chunk)
     child.stdout?.on('data', onData)
@@ -217,7 +235,7 @@ export class JobManager extends EventEmitter<{ exit: [JobSummary] }> {
       }, timeoutMs)
     }
 
-    log.info(`Job ${jobId} started (pid ${job.pid ?? '?'}): ${command.slice(0, 200)}`)
+    log.info(`Job ${jobId} started (pid ${job.pid ?? '?'}): ${job.meta.command.slice(0, 200)}`)
     return this.summary(job)
   }
 
@@ -333,6 +351,37 @@ export class JobManager extends EventEmitter<{ exit: [JobSummary] }> {
     } finally {
       if (fd !== null) closeSync(fd)
     }
+  }
+
+  // Raw log lines without cleaning, for machine-readable output (Claude Code's stream-json). Lines longer than
+  // maxLineBytes come back as null: they cannot be parsed in part.
+  rawLines(jobId: string, from: number, limit: number, maxLineBytes: number) {
+    const job = this.get(jobId)
+    const index = this.ensureIndex(job)
+    const total = index.lines
+    const start = Math.min(Math.max(0, from | 0), total)
+    const end = Math.min(total, start + Math.max(0, limit | 0))
+    const lines: (string | null)[] = []
+    if (end > start) {
+      const fd = openSync(job.logPath, 'r')
+      try {
+        for (let i = start; i < end; i++) {
+          const [a, b] = index.line(i)
+          if (b - a > maxLineBytes) {
+            lines.push(null)
+            continue
+          }
+          const buf = Buffer.allocUnsafe(b - a)
+          const n = b > a ? readSync(fd, buf, 0, b - a, a) : 0
+          lines.push(buf.toString('utf8', 0, n))
+        }
+      } finally {
+        closeSync(fd)
+      }
+    }
+    // While the job writes, the last line can still be incomplete.
+    const partialLast = index.size > 0 && index.starts[index.starts.length - 1] !== index.size
+    return { lines, from: start, to: end, total, partialLast, job: this.summary(job) }
   }
 
   private readLines(fd: number, index: LineIndex, from: number, to: number) {
